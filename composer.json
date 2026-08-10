@@ -1,0 +1,42 @@
+{
+    "name": "gsebastiao/laravel-authz",
+    "description": "RBAC de autenticacao e autorizacao para Laravel, com escopo de tenant opcional.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "gsebastiao"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/database": "^12.0|^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0|^11.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Gsebastiao\\LaravelAuthz\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Gsebastiao\\LaravelAuthz\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Gsebastiao\\LaravelAuthz\\LaravelAuthzServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "vendor/bin/phpunit"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
