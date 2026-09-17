@@ -46,7 +46,7 @@ class TenantScopedPermissionsTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -59,7 +59,7 @@ class TenantScopedPermissionsTest extends TestCase
             'permission_id' => $permissionId,
             'is_granted' => true,
             'is_absolute' => false,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -67,7 +67,7 @@ class TenantScopedPermissionsTest extends TestCase
 
     private function actingAsTenant(int|string|null $tenantId): void
     {
-        $this->app->bind(TenantContext::class, fn () => new class($tenantId) implements TenantContext {
+        $this->app->bind(TenantContext::class, fn() => new class($tenantId) implements TenantContext {
             public function __construct(private int|string|null $tenantId) {}
 
             public function id(): int|string|null

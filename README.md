@@ -17,7 +17,11 @@ cache só quando (e se) o projeto realmente precisar.
 - [Como funciona](#como-funciona)
 - [Nomes de tabela customizados](#nomes-de-tabela-customizados)
 - [Formato do retorno de permissões](#formato-do-retorno-de-permissões)
-- [CRUD e auditoria](#crud-e-auditoria)
+- [CRUD](#crud)
+- [Auditoria (via laravel-auditable)](#auditoria-via-laravel-auditable)
+- [Gates, Middleware e Blade](#gates-middleware-e-blade)
+- [Filtrar listagens por permissão (whereHasPermission)](#filtrar-listagens-por-permissão-wherehaspermission)
+- [Sincronizar o catálogo de permissões via config](#sincronizar-o-catálogo-de-permissões-via-config)
 - [Cache](#cache)
 - [Escopo de tenant](#escopo-de-tenant-sede-delegação-departamento-agência)
 - [O que este pacote deliberadamente não faz](#o-que-este-pacote-deliberadamente-não-faz)
@@ -39,10 +43,11 @@ php artisan vendor:publish --tag=authz-config
 php artisan migrate
 ```
 
-Isso cria 6 tabelas: `auth_logins`, `auth_groups`, `auth_groups_users`,
-`auth_permissions`, `auth_permissions_groups`, `auth_permissions_users`, e
-`auth_audit_table`. O pacote não cria a tabela `users` — assume que ela já
-existe no projeto host.
+Isso cria 5 tabelas: `auth_groups`, `auth_groups_users`,
+`auth_permissions`, `auth_permissions_groups`, `auth_permissions_users`. O
+pacote não cria a tabela `users` — assume que ela já existe no projeto host.
+Auditoria (`auth_audit_table` e afins) é responsabilidade do pacote
+`gsebastiao/laravel-auditable`, instalado à parte quando necessário.
 
 ## Início rápido
 
@@ -155,12 +160,14 @@ Uma string numérica (`'7'`) continua sendo tratada como nome, nunca como id
 `getUserGroups($userId)` retorna os grupos ativos do usuário —
 `[['id' => 1, 'name' => 'financeiro', 'description' => '...'], ...]`.
 
-## CRUD e auditoria
+## CRUD
 
 Toda escrita nas 5 tabelas mutáveis (`auth_groups`, `auth_groups_users`,
 `auth_permissions`, `auth_permissions_groups`, `auth_permissions_users`)
-passa por uma função de CRUD dedicada, e toda função de CRUD grava em
-`auth_audit_table` automaticamente — não precisa chamar auditoria à parte.
+passa por uma função de CRUD dedicada, sempre dentro de uma transação de
+banco (com ou sem auditoria ligada — ver seção seguinte), e dispara um
+Event do Laravel próprio por operação (`GroupCreated`, `GroupUpdated`,
+`PermissionGrantedToGroup`, etc. — 16 classes em `Events\`).
 
 ```php
 $auth = new Authorization();
@@ -188,12 +195,13 @@ $auth->revokeGroupPermission($grantId);
 
 // Exceção individual
 $overrideId = $auth->grantPermissionToUser($userId, $permId, ['is_granted' => false]);
-$auth->updateUserPermission($overrideId, ['data_fim' => '2026-12-31']);
+$auth->updateUserPermission($overrideId, ['end_date' => '2026-12-31']);
 $auth->revokeUserPermission($overrideId);
-
-// Trilha de auditoria de um registro específico
-$auth->getAuditTrail('auth_groups', $groupId);
 ```
+
+Todo `updateX`/`deleteX`/`revokeX`/`removeX` lança `\RuntimeException`
+explícita se o id não existir — nunca falha silenciosamente retornando
+`false`.
 
 `createGroup()` deriva `tenant_id` sempre do tenant ativo — não é parâmetro
 aceito, para não abrir uma forma de criar um grupo apontando pra outro
@@ -203,52 +211,63 @@ ser global — exclusiva de um tenant é a exceção deliberada.
 
 `grantPermissionToGroup()` valida, antes de gravar, que a permissão é
 visível ao tenant do grupo (global, ou exclusiva do mesmo tenant). Falha
-nessa validação grava uma entrada `grant.rejected` e lança
-`\RuntimeException`.
+nessa validação dispara o evento `PermissionGrantToGroupRejected`, grava
+`grant.rejected` na auditoria (se ligada) e lança `\RuntimeException` —
+nada é gravado no banco.
 
-### Formato da auditoria
+## Auditoria (via laravel-auditable)
 
-`auth_audit_table`: `id, batch, subject_type, subject_id, event, changes,
-debug_info, user_id, created_at, updated_at`.
+Este pacote não tem motor de auditoria próprio — quando
+`gsebastiao/laravel-auditable` está instalado **e** `authz.audit.enabled`
+está ligado, toda função de CRUD acima grava automaticamente através dele.
+Sem o pacote instalado, ou com a opção desligada, tudo funciona
+normalmente (mesmas transações, mesmos Events) só que sem gravar nada de
+auditoria — nunca lança erro por falta do pacote opcional.
 
-- `subject_type` é o nome de tabela resolvido (`auth_groups`).
-- `event` carrega sucesso/falha no próprio nome (`'created'` vs
-  `'created.failed'`).
-- `changes` é sempre JSON legível — em update, só os campos que mudaram; em
-  falha, uma mensagem amigável.
-- `debug_info` só é preenchido em falha — erro, linha, arquivo, trace,
-  request. `null` em toda operação de sucesso.
-- `batch` agrupa operações da mesma `DB::transaction()`.
-- `user_id` vem de `Auth::id()`, `null` se não houver usuário autenticado —
-  o pacote não presume qual id representa "usuário sistema".
+```bash
+composer require gsebastiao/laravel-auditable
+```
 
 ```php
 // config/authz.php
 'audit' => [
-    'enabled' => true,   // false: CRUD continua funcionando, só não audita
-    'required' => true,  // false: falha ao gravar auditoria só loga, não lança exceção
+    'enabled' => env('AUTHZ_AUDIT_ENABLED', false),
 ],
 ```
 
+```php
+// Trilha de auditoria de um registro específico — chave LÓGICA de
+// tabela ('groups', não 'auth_groups'), resolvida internamente
+$auth->getAuditTrail('groups', $groupId);
+```
+
+### Como a resolução condicional funciona
+
+Os 5 models do pacote (`Group`, `Permission`, `GroupUser`,
+`PermissionGroup`, `PermissionUser`) usam
+`Gsebastiao\LaravelAuthz\Concerns\ResolvedAuditableTrait` — um alias
+resolvido uma única vez por processo, antes de qualquer model carregar
+(via `composer.json > autoload > files`), para o trait real do
+laravel-auditable quando ele existe, ou para um trait vazio
+(`NoOpAuditable`) caso contrário. Não é possível aplicar uma trait a uma
+classe já declarada — por isso a resolução acontece cedo, via
+`class_alias()`, e não dentro de um `boot()` de ServiceProvider.
+
 ### Colunas de "criado por / em" em listagens
 
-`applyAuditJoins()` anexa essas colunas a uma query via `LEFT JOIN`, sem
-consulta N+1:
+`applyAuditJoins()` anexa colunas a uma query via `LEFT JOIN`, sem
+consulta N+1 — no-op transparente (retorna a query como veio) se a
+auditoria não estiver ativa:
 
 ```php
 use Illuminate\Support\Facades\DB;
 
 $query = DB::table('auth_groups')->where('status', 1);
 $auth->applyAuditJoins('groups', $query)->get();
-// cada linha ganha: audit_created_at, audit_created_by,
-//                    audit_updated_at, audit_updated_by
 ```
 
-`$events` (terceiro parâmetro) sobrescreve `config('authz.audit.join_events')`
-(padrão `['created', 'updated']`) — qualquer evento gravado funciona
-(`granted`, `revoked`, `purged`...). O prefixo `audit_` existe porque
-`created`/`updated` são nomes de evento aqui — sem prefixo colidiriam com as
-colunas nativas de timestamp da própria tabela.
+`$events` (terceiro parâmetro) sobrescreve
+`config('authz.audit.join_events')` (padrão `['created', 'updated']`).
 
 ### Coluna de rótulo legível configurável
 
@@ -256,6 +275,84 @@ Os `changes` de concessões incluem um rótulo além do id (ex:
 `{"group": {"id": 3, "label": "Financeiro"}}`). A coluna lida vem de
 `config('authz.audit.label_columns.{tabela}')` — troque `name`/`permission`
 por outro nome se o projeto usar outra convenção (`nome`, `label`...).
+
+## Gates, Middleware e Blade
+
+Com `config('authz.gates.auto_register')` ligado (padrão), o
+ServiceProvider registra um `Gate::define()` por permissão do catálogo,
+uma vez no boot da aplicação:
+
+```php
+Gate::allows('financeiro.aprovar'); // true/false, mesma lógica de hasPermission()
+```
+
+Middleware, para proteger rotas por permissão:
+
+```php
+Route::post('/aprovar', ...)->middleware('authz.permission:financeiro.aprovar');
+```
+
+Blade directives:
+
+```blade
+@hasPermission('financeiro.aprovar')
+    <button>Aprovar</button>
+@endHasPermission
+
+@hasAnyPermission(['financeiro.ver', 'financeiro.aprovar'])
+    ...
+@endHasAnyPermission
+
+@hasRole('financeiro')
+    ...
+@endHasRole
+```
+
+Helpers globais equivalentes, para uso fora de views
+(`hasPermission()`, `hasAnyPermission()`, `hasAllPermissions()`,
+`hasRole()`, `hasAnyRole()`, `hasAllRoles()`, `getUserGroups()`,
+`getUserPermissions()`) — todos aceitam `$userId` opcional, com
+`Auth::id()` como padrão.
+
+## Filtrar listagens por permissão (whereHasPermission)
+
+Para telas de listagem que precisam filtrar usuários por permissão sem
+N+1 (uma query por usuário candidato), a macro `whereHasPermission`
+replica a mesma cascata de precedência de `hasPermission()` via
+`whereExists`/`whereNotExists`:
+
+```php
+User::whereHasPermission('financeiro.aprovar')->get();
+
+// Se a coluna de id do usuário não se chamar 'id' na tabela consultada:
+User::whereHasPermission('financeiro.aprovar', 'usuario_id')->get();
+```
+
+## Sincronizar o catálogo de permissões via config
+
+Para projetos que preferem declarar permissões no código em vez de
+gerenciá-las manualmente via banco:
+
+```php
+// config/authz.php
+'permissions' => [
+    [
+        'permission' => 'financeiro.aprovar',
+        'module' => 'financeiro',
+        'action' => 'aprovar',
+        'label' => 'Aprovar solicitação financeira',
+    ],
+    // ...
+],
+```
+
+```bash
+php artisan authz:sync-permissions
+```
+
+Cria o que falta, atualiza os campos que mudaram no que já existe, e
+nunca deleta automaticamente — permissões que saíram do config mas ainda
+existem no banco são listadas como aviso, para revisão manual.
 
 ## Cache
 
@@ -390,6 +487,17 @@ permissões exclusivas.
 
 **Atenção:** o id do tenant precisa ser um valor truthy (nunca `0`).
 
+**Detalhe de schema:** `auth_groups` tem uma coluna **gerada pelo banco**
+`tenant_key` (`COALESCE(tenant_id, 0)`, nunca escrita pela aplicação),
+usada só pela constraint `unique(['tenant_key', 'name'])`. Isso existe
+porque `NULL` não é igual a `NULL` em `UNIQUE` na maioria dos bancos
+(SQLite, PostgreSQL, SQL Server — MySQL é exceção) — com `tenant_id`
+sempre `null` no modo padrão, `unique(['tenant_id', 'name'])` direto não
+impediria nomes de grupo duplicados. Por ser calculada pelo próprio
+banco, fica correta mesmo para linhas inseridas fora de
+`createGroup()`/`updateGroup()` (fixtures de teste, scripts de migração
+de dados) — nunca defina `tenant_key` manualmente.
+
 ## O que este pacote deliberadamente não faz
 
 - Menus, navegação ou árvore de UI — fica em um pacote separado, que
@@ -400,6 +508,13 @@ permissões exclusivas.
   tempo, com regra de precedência entre os dois).
 - Models de domínio `Sede`/`Delegação`/`Departamento`/`Agência` — isso é
   modelagem do projeto host; o pacote termina no `tenant_id` genérico.
+- Laravel Policies — Policies são tipicamente por Model de domínio do
+  projeto host (`PostPolicy`, `InvoicePolicy`...), não deste pacote. Use
+  os Gates auto-registrados (`Gate::allows('financeiro.aprovar')`) ou
+  `hasPermission()` dentro da própria Policy do seu projeto, quando
+  precisar combinar a checagem de permissão com regras específicas do
+  domínio (ex: "só pode editar a própria fatura E ter
+  `financeiro.editar`").
 
 Se um caso real precisar de algo disso, desenhe para aquele caso concreto —
 mais barato e mais certeiro do que generalizar sem um caso para guiar o
@@ -448,15 +563,21 @@ imediata.
 composer test
 ```
 
-Cobrem: as 6 branches da cascata de prioridade, os três formatos de
+Cobrem as 6 branches da cascata de prioridade, os três formatos de
 `getEffectivePermissions()`, comportamento idêntico ao single-tenant sem
 `TenantContext` customizado, isolamento real entre tenants, permissões
 exclusivas de tenant (seletor filtrado e defesa em leitura e escrita), nomes
-de tabela customizados fim a fim — incluindo a tabela de usuários, com
-foreign key enforcement real — CRUD auditado (diff correto, caminho de
-falha, agrupamento por batch), `applyAuditJoins()`, e cache (servindo do
+de tabela customizados fim a fim, CRUD auditado (diff correto, caminho de
+falha, agrupamento por transação), `applyAuditJoins()`, e cache (servindo do
 cache de verdade, invalidação por usuário e por grupo, isolamento por
 tenant, toggle `invalidate_on_write`, formatos compartilhando uma entrada).
+
+Além da suíte PHPUnit, o comportamento também foi validado por execução
+real (SQLite in-memory) durante o desenvolvimento — incluindo os cenários
+mais delicados de precedência de `whereHasPermission()` contra
+`hasPermission()` como baseline, rollback real de transação forçando
+violação de chave, e os dois cenários de integração com
+`gsebastiao/laravel-auditable` (instalado e não instalado).
 
 ## Versionamento
 

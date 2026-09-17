@@ -5,16 +5,17 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration {
+
     /**
      * Run the migrations.
      */
     public function up(): void
     {
-        $permissions = config('authz.tables.permissions');
-        $permissionsGroups = config('authz.tables.permissions_groups');
-        $permissionsUsers = config('authz.tables.permissions_users');
+        $users = config('authz.tables.users');
         $groups = config('authz.tables.groups');
-        $users = config('authz.tables.user');
+        $permissions = config('authz.tables.permissions');
+        $permissionsUsers = config('authz.tables.permissions_users');
+        $permissionsGroups = config('authz.tables.permissions_groups');
 
         // Tabela: auth_permissions
         // Catálogo central de permissões do sistema. Globais por padrão
@@ -87,8 +88,8 @@ return new class extends Migration {
             //   6. nenhum registro em lugar nenhum              -> NEGADO (padrão)
             $table->boolean('is_absolute')->default(false);
 
-            $table->date('data_inicio'); // data_inicio date NOT NULL
-            $table->date('data_fim')->nullable(); // data_fim date DEFAULT NULL
+            $table->date('start_date'); // start_date date NOT NULL
+            $table->date('end_date')->nullable(); // end_date date DEFAULT NULL
 
             $table->timestamps(); // created_at e updated_at (automáticos)
             $table->softDeletes(); // deleted_at (para soft deletes)
@@ -112,8 +113,8 @@ return new class extends Migration {
             $table->foreignId('user_id')->constrained($users)->cascadeOnUpdate()->cascadeOnDelete();
             $table->foreignId('permission_id')->constrained($permissions)->cascadeOnUpdate()->cascadeOnDelete();
             $table->tinyInteger('is_granted')->unsigned()->default(1); // is_granted tinyint UNSIGNED DEFAULT '1'
-            $table->date('data_inicio'); // data_inicio date NOT NULL
-            $table->date('data_fim')->nullable(); // data_fim date DEFAULT NULL
+            $table->date('start_date'); // start_date date NOT NULL
+            $table->date('end_date')->nullable(); // end_date date DEFAULT NULL
 
             $table->timestamps();
             $table->softDeletes();

@@ -14,63 +14,99 @@ return [
     |
     */
     'tables' => [
-        'logins' => 'auth_logins',
         'groups' => 'auth_groups',
-        'groups_users' => 'auth_groups_users',
         'permissions' => 'auth_permissions',
-        'permissions_groups' => 'auth_permissions_groups',
+        'groups_users' => 'auth_groups_users',
         'permissions_users' => 'auth_permissions_users',
-        'audit' => 'auth_audit_table',
+        'permissions_groups' => 'auth_permissions_groups',
 
         // Tabela de usuários do projeto host — o pacote nunca cria essa
         // tabela, só referencia via foreign key. 'users' é o padrão do
         // Laravel; troque aqui se o projeto usa outro nome (ex: 'usuarios').
-        'user' => 'users',
+        'users' => 'users',
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Auditoria
+    | Auditoria (via laravel-auditable)
     |--------------------------------------------------------------------------
     |
-    | 'enabled' desliga toda gravação de auditoria (as funções de CRUD
-    | continuam funcionando normalmente, só não gravam nada em
-    | auth_audit_table). 'required', quando true, faz uma falha ao gravar
-    | a própria auditoria lançar exceção (além de logar); quando false, só
-    | loga e segue — a operação de negócio não é afetada por uma falha na
-    | auditoria em si.
-    |
-    | 'join_events' é o default de applyAuditJoins() quando o chamador não
-    | passa uma lista própria — quais eventos viram colunas '{evento}_at'/
-    | '{evento}_by' numa query de listagem. Qualquer string de evento que
-    | o pacote grava funciona aqui (created, updated, deleted, purged,
-    | granted, revoked...), não só os 4 do padrão de referência.
-    |
-    | 'column_prefix' evita colisão com colunas nativas da própria tabela
-    | — 'created' e 'updated' são nomes de evento aqui, então sem prefixo
-    | 'created_at'/'updated_at' colidiriam de verdade com as colunas
-    | nativas de timestamp.
-    |
-    | 'user_label_column' é a coluna de auth.tables.user exibida como
-    | '{evento}_by' nas colunas de applyAuditJoins().
-    |
-    | 'label_columns' é a coluna exibida como rótulo legível nos changes
-    | da auditoria (ex: no lugar de só group_id: 3, mostra também o nome
-    | do grupo) — por tabela do pacote, editável se o projeto usa outro
-    | nome de coluna (ex: 'nome' em vez de 'name').
+    | Se o pacote gsebastiao/laravel-auditable estiver instalado e esta opção
+    | estiver habilitada, todos os CRUDs do authz serão auditados automaticamente.
     |
     */
     'audit' => [
-        'enabled' => true,
-        'required' => true,
+        'enabled' => env('AUTHZ_AUDIT_ENABLED', false),
+
+        // Prefixo de coluna usado por applyAuditJoins() para as colunas
+        // {prefixo}{evento}_at / {prefixo}{evento}_by anexadas via LEFT JOIN.
+        // Default 'audit_' porque 'created'/'updated' são nomes de
+        // evento aqui — sem prefixo, as colunas geradas colidiriam com
+        // created_at/updated_at nativos da própria tabela.
+        'column_prefix' => env('AUTHZ_AUDIT_COLUMN_PREFIX', 'audit_'),
+
+        // Eventos usados por padrão em applyAuditJoins() quando $events
+        // não é passado explicitamente.
         'join_events' => ['created', 'updated'],
-        'column_prefix' => 'audit_',
-        'user_label_column' => 'name',
+
+        // Coluna usada como rótulo legível de cada tabela mutável, para
+        // trocar uma FK crua (group_id: 3) por um valor legível
+        // (group: {id: 3, label: "Financeiro"}) no changes de auditoria.
         'label_columns' => [
             'groups' => 'name',
             'permissions' => 'permission',
         ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Model de usuário
+    |--------------------------------------------------------------------------
+    |
+    | Usado pelas relações user() de GroupUser/PermissionUser, e como
+    | fallback preferencial em HasRoles::getUsersWithRole() antes de
+    | cair em config('auth.providers.users.model'). Deixe null para usar
+    | sempre o model de usuário padrão configurado em config/auth.php.
+    |
+    */
+    'user_model' => env('AUTHZ_USER_MODEL', null),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Gates
+    |--------------------------------------------------------------------------
+    |
+    | Se true, o ServiceProvider registra automaticamente um
+    | Gate::define() por permissão do catálogo (uma vez no boot),
+    | nomeado igual à própria string de permissão.
+    |
+    */
+    'gates' => [
+        'auto_register' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Catálogo declarativo de permissões
+    |--------------------------------------------------------------------------
+    |
+    | Usado por `php artisan authz:sync-permissions` para criar/atualizar
+    | o catálogo de permissões a partir do código, em vez de gerenciar
+    | manualmente via banco. Cada entrada segue a assinatura de
+    | createPermission(): 'permission', 'module', 'action', 'label', e
+    | opcionalmente 'description'.
+    |
+    | Exemplo:
+    | [
+    |     'permission' => 'financeiro.aprovar',
+    |     'module' => 'financeiro',
+    |     'action' => 'aprovar',
+    |     'label' => 'Aprovar solicitação financeira',
+    |     'description' => null,
+    | ],
+    |
+    */
+    'permissions' => [],
 
     /*
     |--------------------------------------------------------------------------
@@ -99,9 +135,9 @@ return [
     |
     */
     'cache' => [
-        'enabled' => env('AUTHZ_CACHE_ENABLED', false),
-        'store' => env('AUTHZ_CACHE_STORE', null),
         'ttl' => env('AUTHZ_CACHE_TTL', 3600),
+        'store' => env('AUTHZ_CACHE_STORE', null),
+        'enabled' => env('AUTHZ_CACHE_ENABLED', false),
         'prefix' => env('AUTHZ_CACHE_PREFIX', 'authz'),
         'invalidate_on_write' => env('AUTHZ_CACHE_INVALIDATE_ON_WRITE', true),
     ],

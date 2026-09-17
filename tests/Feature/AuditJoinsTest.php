@@ -8,6 +8,14 @@ use Gsebastiao\LaravelAuthz\Tests\TestCase;
 
 class AuditJoinsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['authz.audit.enabled' => true]);
+        \Gsebastiao\Auditable\Audit::reset();
+    }
+
     private function actingUser(string $name): TestUser
     {
         $user = TestUser::create(['name' => $name]);

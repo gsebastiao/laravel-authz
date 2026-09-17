@@ -43,7 +43,7 @@ class ConfigurableTableNamesTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -61,7 +61,7 @@ class ConfigurableUserTableTest extends TestCase
         // Simula um projeto onde a tabela de usuários já se chama
         // 'usuarios' — TestCase::defineDatabaseMigrations() lê esse
         // mesmo config pra criar a tabela com o nome certo.
-        $app['config']->set('authz.tables.user', 'usuarios');
+        $app['config']->set('authz.tables.users', 'usuarios');
     }
 
     /** @test */
@@ -85,7 +85,7 @@ class ConfigurableUserTableTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

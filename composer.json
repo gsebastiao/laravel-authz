@@ -17,14 +17,22 @@
         "orchestra/testbench": "^10.0|^11.0",
         "phpunit/phpunit": "^11.0"
     },
+    "suggest": {
+        "gsebastiao/laravel-auditable": "Permite auditoria automática dos CRUDs deste pacote (config('authz.audit.enabled'))."
+    },
     "autoload": {
         "psr-4": {
             "Gsebastiao\\LaravelAuthz\\": "src/"
-        }
+        },
+        "files": [
+            "src/Concerns/AuditableModelSupport.php",
+            "src/Helpers/helpers.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
-            "Gsebastiao\\LaravelAuthz\\Tests\\": "tests/"
+            "Gsebastiao\\LaravelAuthz\\Tests\\": "tests/",
+            "Gsebastiao\\Auditable\\": "tests/Stubs/Gsebastiao/Auditable/"
         }
     },
     "extra": {

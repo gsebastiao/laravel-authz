@@ -2,18 +2,36 @@
 
 namespace Gsebastiao\LaravelAuthz\Models;
 
-use Gsebastiao\LaravelAuthz\Concerns\Auditable;
+use Gsebastiao\LaravelAuthz\Concerns\AuditsCrud;
 use Gsebastiao\LaravelAuthz\Concerns\Cacheable;
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 use Gsebastiao\LaravelAuthz\Enums\PermissionFormat;
+use Gsebastiao\LaravelAuthz\Events\GroupCreated;
+use Gsebastiao\LaravelAuthz\Events\GroupDeleted;
+use Gsebastiao\LaravelAuthz\Events\GroupMembershipUpdated;
+use Gsebastiao\LaravelAuthz\Events\GroupUpdated;
+use Gsebastiao\LaravelAuthz\Events\PermissionCreated;
+use Gsebastiao\LaravelAuthz\Events\PermissionDeleted;
+use Gsebastiao\LaravelAuthz\Events\PermissionGrantedToGroup;
+use Gsebastiao\LaravelAuthz\Events\PermissionGrantedToUser;
+use Gsebastiao\LaravelAuthz\Events\PermissionGrantToGroupRejected;
+use Gsebastiao\LaravelAuthz\Events\PermissionRevokedFromGroup;
+use Gsebastiao\LaravelAuthz\Events\PermissionRevokedFromUser;
+use Gsebastiao\LaravelAuthz\Events\PermissionUpdated;
+use Gsebastiao\LaravelAuthz\Events\PermissionUpdatedForUser;
+use Gsebastiao\LaravelAuthz\Events\PermissionUpdatedInGroup;
+use Gsebastiao\LaravelAuthz\Events\UserAddedToGroup;
+use Gsebastiao\LaravelAuthz\Events\UserRemovedFromGroup;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 
 class Authorization extends Model
 {
-    use Auditable;
     use Cacheable;
+    use AuditsCrud;
+
     /**
      * -----------------------------
      * Retorna os grupos ativos de um usuário (respeitando status,
@@ -52,12 +70,12 @@ class Authorization extends Model
             ->whereNull("{$groupsUsers}.deleted_at")
             ->whereNull("{$groups}.deleted_at")
             ->where(function ($q) use ($groupsUsers) {
-                $q->whereNull("{$groupsUsers}.data_fim")
-                    ->orWhere("{$groupsUsers}.data_fim", '>=', now()->toDateString());
+                $q->whereNull("{$groupsUsers}.end_date")
+                    ->orWhere("{$groupsUsers}.end_date", '>=', now()->toDateString());
             })
-            // Único ponto de filtro de tenant nesta query. Quando
-            // activeTenantId() é null (padrão do pacote), when() não
-            // adiciona nada — comportamento idêntico ao original.
+            // Modo compatibilidade single-tenant intencional: sem tenant
+            // ativo, mostra tudo (não é a defesa em profundidade contra
+            // dado corrompido — essa vive em computeEffectivePermissions()).
             ->when(self::activeTenantId(), function ($q, $tenantId) use ($groups) {
                 $q->where("{$groups}.tenant_id", $tenantId);
             })
@@ -138,7 +156,6 @@ class Authorization extends Model
 
     private function computeEffectivePermissions(int $userId): array
     {
-
         $permissions = self::table('permissions');
         $permissionsUsers = self::table('permissions_users');
         $permissionsGroups = self::table('permissions_groups');
@@ -160,8 +177,8 @@ class Authorization extends Model
             ->where('user_id', $userId)
             ->whereNull('deleted_at')
             ->where(function ($q) {
-                $q->whereNull('data_fim')
-                    ->orWhere('data_fim', '>=', now()->toDateString());
+                $q->whereNull('end_date')
+                    ->orWhere('end_date', '>=', now()->toDateString());
             })
             ->get(['permission_id', 'is_granted']);
 
@@ -185,8 +202,8 @@ class Authorization extends Model
                 ->whereIn("{$permissionsGroups}.group_id", $groupIds)
                 ->whereNull("{$permissionsGroups}.deleted_at")
                 ->where(function ($q) use ($permissionsGroups) {
-                    $q->whereNull("{$permissionsGroups}.data_fim")
-                        ->orWhere("{$permissionsGroups}.data_fim", '>=', now()->toDateString());
+                    $q->whereNull("{$permissionsGroups}.end_date")
+                        ->orWhere("{$permissionsGroups}.end_date", '>=', now()->toDateString());
                 })
                 // Defesa em profundidade: ignora concessão cuja permissão
                 // é exclusiva de outro tenant. Não deveria existir uma
@@ -194,11 +211,21 @@ class Authorization extends Model
                 // deveria nem oferecer a opção — ver getAssignablePermissions()),
                 // mas se existir por bug ou edição direta no banco, não
                 // é honrada aqui.
-                ->when(self::activeTenantId(), function ($q, $tenantId) use ($permissions) {
-                    $q->where(function ($q2) use ($permissions, $tenantId) {
-                        $q2->whereNull("{$permissions}.tenant_id")
-                            ->orWhere("{$permissions}.tenant_id", $tenantId);
-                    });
+                //
+                // CORRIGIDO: quando não há tenant ativo (NullTenantContext,
+                // o padrão do pacote), a versão original usava
+                // ->when(self::activeTenantId(), ...) — quando() só executa
+                // o callback com condição truthy, então com tenant null
+                // a defesa nunca era aplicada, deixando passar concessões
+                // de permissão de QUALQUER tenant. Agora a condição
+                // whereNull(tenant_id) roda sempre; a parte de tenant
+                // específico só se soma quando há tenant ativo.
+                ->where(function ($q2) use ($permissions) {
+                    $q2->whereNull("{$permissions}.tenant_id");
+
+                    if (self::activeTenantId() !== null) {
+                        $q2->orWhere("{$permissions}.tenant_id", self::activeTenantId());
+                    }
                 })
                 ->get([
                     "{$permissionsGroups}.permission_id",
@@ -280,7 +307,8 @@ class Authorization extends Model
      * e poderia conceder a si mesmo uma permissão que não é dele.
      *
      * Sem tenant ativo (padrão do pacote), retorna o catálogo inteiro —
-     * não há particionamento a aplicar.
+     * modo compatibilidade single-tenant intencional, não há
+     * particionamento a aplicar.
      * -----------------------------
      */
     public function getAssignablePermissions(PermissionFormat $format = PermissionFormat::Both): array
@@ -363,56 +391,203 @@ class Authorization extends Model
         return app(TenantContext::class)->id();
     }
 
-    // ==================== CRUD: GRUPOS ====================
+    /**
+     * -----------------------------
+     * Normaliza um array associativo para comparação de diff: datas
+     * viram 'Y-m-d H:i:s', bool vira '1'/'0', resto vira string. Usado
+     * só para decidir quais chaves mudaram entre o dado antigo e o novo
+     * — nunca é o valor de fato gravado ou auditado.
+     * -----------------------------
+     */
+    protected static function stringifyForDiff(array $data): array
+    {
+        $out = [];
+
+        foreach ($data as $key => $value) {
+            if ($value instanceof \DateTimeInterface) {
+                $out[$key] = $value->format('Y-m-d H:i:s');
+            } elseif (is_bool($value)) {
+                $out[$key] = $value ? '1' : '0';
+            } elseif ($value === null) {
+                $out[$key] = null;
+            } else {
+                $out[$key] = (string) $value;
+            }
+        }
+
+        return $out;
+    }
 
     /**
-     * Cria um grupo. tenant_id é sempre derivado do tenant ativo — não é
-     * parâmetro aceito aqui de propósito, para não abrir uma forma de
-     * criar um grupo apontando pra outro tenant por engano.
+     * -----------------------------
+     * Troca uma FK crua (group_id: 3) por um valor legível
+     * (group: {id: 3, label: "Financeiro"}) no changes de auditoria,
+     * usando config('authz.audit.label_columns.*'). $refs mapeia o
+     * nome da FK ('group_id') para a chave lógica de tabela ('groups')
+     * de onde buscar o rótulo.
+     * -----------------------------
      */
+    protected static function labeledChanges(string $tableKey, array $data, array $refs = []): array
+    {
+        $changes = $data;
+
+        foreach ($refs as $fkColumn => $refTableKey) {
+            if (!array_key_exists($fkColumn, $data) || $data[$fkColumn] === null) {
+                continue;
+            }
+
+            $labelColumn = config("authz.audit.label_columns.{$refTableKey}");
+
+            if ($labelColumn === null) {
+                continue;
+            }
+
+            $refId = $data[$fkColumn];
+            $label = DB::table(static::table($refTableKey))->where('id', $refId)->value($labelColumn);
+
+            $baseName = str_ends_with($fkColumn, '_id') ? substr($fkColumn, 0, -3) : $fkColumn;
+
+            unset($changes[$fkColumn]);
+            $changes[$baseName] = ['id' => $refId, 'label' => $label];
+        }
+
+        return $changes;
+    }
+
+    /**
+     * =================================================================
+     * CRUD — Grupos
+     * =================================================================
+     */
+
     public function createGroup(string $name, ?string $description = null, int $status = 1): int
     {
-        return static::auditedCreate('groups', [
+        $table = static::table('groups');
+        $data = [
             'name' => $name,
             'description' => $description,
             'status' => $status,
             'tenant_id' => static::activeTenantId(),
-        ], 'created');
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        try {
+            $id = static::withAuditBatch(function () use ($table, $data) {
+                $id = DB::table($table)->insertGetId($data);
+                static::auditEvent('groups', $id, 'created', static::labeledChanges('groups', $data));
+
+                return $id;
+            });
+        } catch (\Throwable $e) {
+            static::auditFailureEvent('groups', 0, 'created.failed', $e, ['data' => $data]);
+            throw $e;
+        }
+
+        event(new GroupCreated($id, $data));
+
+        return $id;
     }
 
     public function updateGroup(int $id, array $data): bool
     {
-        $result = static::auditedUpdate('groups', $id, $data, 'updated');
-        static::invalidateForGroup($id);
+        $oldData = DB::table(static::table('groups'))->find($id);
+        if (!$oldData) {
+            throw new \RuntimeException("Grupo #{$id} não encontrado.");
+        }
 
-        return $result;
+        $table = static::table('groups');
+        $data['updated_at'] = now();
+
+        $updated = static::withAuditBatch(function () use ($table, $id, $data, $oldData) {
+            $updated = DB::table($table)->where('id', $id)->update($data);
+
+            if ($updated) {
+                static::auditEvent('groups', $id, 'updated', static::labeledChanges('groups', $data));
+            }
+
+            return $updated;
+        });
+
+        if ($updated) {
+            event(new GroupUpdated($id, (array) $oldData, $data));
+            static::invalidateForGroup($id);
+        }
+
+        return (bool) $updated;
     }
 
     public function deleteGroup(int $id, bool $purge = false): bool
     {
-        $result = static::auditedDelete('groups', $id, $purge ? 'purged' : 'deleted', $purge);
-        static::invalidateForGroup($id);
+        $oldData = DB::table(static::table('groups'))->find($id);
+        if (!$oldData) {
+            throw new \RuntimeException("Grupo #{$id} não encontrado.");
+        }
 
-        return $result;
+        $table = static::table('groups');
+
+        $deleted = static::withAuditBatch(function () use ($table, $id, $purge, $oldData) {
+            $deleted = $purge
+                ? DB::table($table)->where('id', $id)->delete()
+                : DB::table($table)->where('id', $id)->update(['deleted_at' => now()]);
+
+            if ($deleted) {
+                static::auditEvent('groups', $id, $purge ? 'purged' : 'deleted', (array) $oldData);
+            }
+
+            return $deleted;
+        });
+
+        if ($deleted) {
+            event(new GroupDeleted($id, (array) $oldData, $purge));
+            static::invalidateForGroup($id);
+        }
+
+        return (bool) $deleted;
     }
 
-    // ==================== CRUD: MEMBROS DE GRUPO ====================
+    /**
+     * =================================================================
+     * CRUD — Membros de grupo
+     * =================================================================
+     */
 
     public function addUserToGroup(int $userId, int $groupId, array $options = []): int
     {
-        $id = static::auditedCreate('groups_users', array_merge([
+        $table = static::table('groups_users');
+        $data = array_merge([
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
-            'data_fim' => null,
+            'start_date' => now()->toDateString(),
+            'end_date' => null,
             'is_primary' => 0,
             'observacao' => null,
-        ], $options), 'created', [
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $options, [
             'user_id' => $userId,
-            'group' => ['id' => $groupId, 'label' => static::labelFor('groups', $groupId)],
+            'group_id' => $groupId,
         ]);
 
+        try {
+            $id = static::withAuditBatch(function () use ($table, $data) {
+                $id = DB::table($table)->insertGetId($data);
+                static::auditEvent(
+                    'groups_users',
+                    $id,
+                    'created',
+                    static::labeledChanges('groups_users', $data, ['group_id' => 'groups'])
+                );
+
+                return $id;
+            });
+        } catch (\Throwable $e) {
+            static::auditFailureEvent('groups_users', 0, 'created.failed', $e, ['data' => $data]);
+            throw $e;
+        }
+
+        event(new UserAddedToGroup($id, $userId, $groupId, $data));
         static::invalidateForUser($userId);
 
         return $id;
@@ -420,40 +595,74 @@ class Authorization extends Model
 
     public function updateGroupMembership(int $membershipId, array $data): bool
     {
-        $userId = DB::table(static::table('groups_users'))->find($membershipId)?->user_id;
-
-        $result = static::auditedUpdate('groups_users', $membershipId, $data, 'updated');
-
-        if ($userId) {
-            static::invalidateForUser($userId);
+        $oldData = DB::table(static::table('groups_users'))->find($membershipId);
+        if (!$oldData) {
+            throw new \RuntimeException("Membresia #{$membershipId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('groups_users');
+        $data['updated_at'] = now();
+
+        $updated = static::withAuditBatch(function () use ($table, $membershipId, $data) {
+            $updated = DB::table($table)->where('id', $membershipId)->update($data);
+
+            if ($updated) {
+                static::auditEvent(
+                    'groups_users',
+                    $membershipId,
+                    'updated',
+                    static::labeledChanges('groups_users', $data, ['group_id' => 'groups'])
+                );
+            }
+
+            return $updated;
+        });
+
+        if ($updated) {
+            event(new GroupMembershipUpdated($membershipId, (array) $oldData, $data));
+            if ($oldData->user_id) {
+                static::invalidateForUser($oldData->user_id);
+            }
+        }
+
+        return (bool) $updated;
     }
 
     public function removeUserFromGroup(int $membershipId, bool $purge = false): bool
     {
-        $userId = DB::table(static::table('groups_users'))->find($membershipId)?->user_id;
-
-        $result = static::auditedDelete('groups_users', $membershipId, $purge ? 'purged' : 'deleted', $purge);
-
-        if ($userId) {
-            static::invalidateForUser($userId);
+        $oldData = DB::table(static::table('groups_users'))->find($membershipId);
+        if (!$oldData) {
+            throw new \RuntimeException("Membresia #{$membershipId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('groups_users');
+
+        $deleted = static::withAuditBatch(function () use ($table, $membershipId, $purge, $oldData) {
+            $deleted = $purge
+                ? DB::table($table)->where('id', $membershipId)->delete()
+                : DB::table($table)->where('id', $membershipId)->update(['deleted_at' => now()]);
+
+            if ($deleted) {
+                static::auditEvent('groups_users', $membershipId, $purge ? 'purged' : 'deleted', (array) $oldData);
+            }
+
+            return $deleted;
+        });
+
+        if ($deleted) {
+            event(new UserRemovedFromGroup($membershipId, $oldData->user_id, $oldData->group_id, $purge));
+            static::invalidateForUser($oldData->user_id);
+        }
+
+        return (bool) $deleted;
     }
 
-    // ==================== CRUD: CATÁLOGO DE PERMISSÕES ====================
-
     /**
-     * Cria uma permissão no catálogo. tenant_id fica explícito e default
-     * null (global) de propósito — ao contrário de createGroup(), a
-     * maioria das permissões deve ser global (definida pela plataforma);
-     * exclusiva de um tenant é a exceção deliberada, não o padrão
-     * implícito. Passe o id do tenant explicitamente quando for esse o
-     * caso (ver README sobre permissões exclusivas de tenant).
+     * =================================================================
+     * CRUD — Catálogo de permissões
+     * =================================================================
      */
+
     public function createPermission(
         string $permission,
         string $module,
@@ -462,7 +671,8 @@ class Authorization extends Model
         ?string $description = null,
         ?int $tenantId = null
     ): int {
-        return static::auditedCreate('permissions', [
+        $table = static::table('permissions');
+        $data = [
             'permission' => $permission,
             'module' => $module,
             'action' => $action,
@@ -470,47 +680,88 @@ class Authorization extends Model
             'description' => $description,
             'status' => 1,
             'tenant_id' => $tenantId,
-        ], 'created');
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        try {
+            $id = static::withAuditBatch(function () use ($table, $data) {
+                $id = DB::table($table)->insertGetId($data);
+                static::auditEvent('permissions', $id, 'created', $data);
+
+                return $id;
+            });
+        } catch (\Throwable $e) {
+            static::auditFailureEvent('permissions', 0, 'created.failed', $e, ['data' => $data]);
+            throw $e;
+        }
+
+        event(new PermissionCreated($id, $data));
+
+        return $id;
     }
 
-    /**
-     * ATENÇÃO — não invalida cache automaticamente. Diferente das demais
-     * funções de CRUD, editar o catálogo pode afetar qualquer usuário que
-     * tenha esta permissão concedida por qualquer caminho (grupo ou
-     * exceção individual, de qualquer tenant) — descobrir precisamente
-     * quem exigiria uma consulta que cruza 3 tabelas, para uma ação de
-     * admin rara. Se caching estiver ligado e isto importar pro seu caso,
-     * chame Authorization::forgetUserCache() para os usuários conhecidos
-     * afetados, ou aceite que o TTL é quem corrige isso.
-     */
     public function updatePermission(int $id, array $data): bool
     {
-        return static::auditedUpdate('permissions', $id, $data, 'updated');
+        $oldData = DB::table(static::table('permissions'))->find($id);
+        if (!$oldData) {
+            throw new \RuntimeException("Permissão #{$id} não encontrada.");
+        }
+
+        $table = static::table('permissions');
+        $data['updated_at'] = now();
+
+        $updated = static::withAuditBatch(function () use ($table, $id, $data) {
+            $updated = DB::table($table)->where('id', $id)->update($data);
+
+            if ($updated) {
+                static::auditEvent('permissions', $id, 'updated', $data);
+            }
+
+            return $updated;
+        });
+
+        if ($updated) {
+            event(new PermissionUpdated($id, (array) $oldData, $data));
+        }
+
+        return (bool) $updated;
     }
 
-    /**
-     * ATENÇÃO — mesma ressalva de updatePermission(): não invalida cache
-     * automaticamente.
-     */
     public function deletePermission(int $id, bool $purge = false): bool
     {
-        return static::auditedDelete('permissions', $id, $purge ? 'purged' : 'deleted', $purge);
+        $oldData = DB::table(static::table('permissions'))->find($id);
+        if (!$oldData) {
+            throw new \RuntimeException("Permissão #{$id} não encontrada.");
+        }
+
+        $table = static::table('permissions');
+
+        $deleted = static::withAuditBatch(function () use ($table, $id, $purge, $oldData) {
+            $deleted = $purge
+                ? DB::table($table)->where('id', $id)->delete()
+                : DB::table($table)->where('id', $id)->update(['deleted_at' => now()]);
+
+            if ($deleted) {
+                static::auditEvent('permissions', $id, $purge ? 'purged' : 'deleted', (array) $oldData);
+            }
+
+            return $deleted;
+        });
+
+        if ($deleted) {
+            event(new PermissionDeleted($id, (array) $oldData, $purge));
+        }
+
+        return (bool) $deleted;
     }
 
-    // ==================== CRUD: CONCESSÃO POR GRUPO ====================
-
     /**
-     * Concede uma permissão a um grupo. Valida ANTES de gravar que a
-     * permissão é visível ao tenant do grupo (global, ou exclusiva do
-     * mesmo tenant) — fecha o mesmo buraco que a defesa em profundidade
-     * de getEffectivePermissions() cobre na leitura, mas aqui na escrita,
-     * antes da linha ruim chegar a existir. Falha na validação grava uma
-     * entrada de auditoria rejeitada e lança exceção — não falha em
-     * silêncio.
-     *
-     * @throws \RuntimeException se a permissão for exclusiva de um tenant diferente do grupo
-     * @throws \InvalidArgumentException se o grupo ou a permissão não existirem
+     * =================================================================
+     * CRUD — Concessão a grupo
+     * =================================================================
      */
+
     public function grantPermissionToGroup(int $groupId, int $permissionId, array $options = []): int
     {
         $group = DB::table(static::table('groups'))->find($groupId);
@@ -520,44 +771,61 @@ class Authorization extends Model
             throw new \InvalidArgumentException('Grupo ou permissão inexistente.');
         }
 
-        if ($permission->tenant_id !== null && $permission->tenant_id != $group->tenant_id) {
-            static::audit(static::table('permissions_groups'), 0, 'grant.rejected', [
-                'error' => 'Permissão exclusiva de outro tenant',
+        // Validação de visibilidade de tenant, antes de qualquer escrita:
+        // fecha na escrita o mesmo buraco que a defesa em profundidade
+        // de computeEffectivePermissions() já cobria na leitura.
+        $permissionTenantId = $permission->tenant_id;
+        $groupTenantId = $group->tenant_id;
+
+        if ($permissionTenantId !== null && $permissionTenantId != $groupTenantId) {
+            event(new PermissionGrantToGroupRejected($groupId, $permissionId, $permissionTenantId, $groupTenantId));
+            static::auditEvent('permissions_groups', 0, 'grant.rejected', [
                 'group_id' => $groupId,
-                'group_tenant_id' => $group->tenant_id,
                 'permission_id' => $permissionId,
-                'permission_tenant_id' => $permission->tenant_id,
+                'permission_tenant_id' => $permissionTenantId,
+                'group_tenant_id' => $groupTenantId,
             ]);
 
             throw new \RuntimeException(
-                "Permissão #{$permissionId} é exclusiva do tenant #{$permission->tenant_id} e não pode ".
-                "ser concedida ao grupo #{$groupId} (tenant #".($group->tenant_id ?? 'nenhum').")."
+                "Permissão #{$permissionId} é exclusiva do tenant #{$permissionTenantId} e não pode " .
+                "ser concedida ao grupo #{$groupId} (tenant #" . ($groupTenantId ?? 'nenhum') . ")."
             );
         }
 
+        $table = static::table('permissions_groups');
         $data = array_merge([
             'is_granted' => true,
             'is_absolute' => false,
-            'data_inicio' => now()->toDateString(),
-            'data_fim' => null,
+            'start_date' => now()->toDateString(),
+            'end_date' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
         ], $options, [
             'group_id' => $groupId,
             'permission_id' => $permissionId,
         ]);
 
-        // Usa as linhas já buscadas acima em vez de labelFor() (que
-        // consultaria de novo) — só a coluna vem de config, pelo mesmo
-        // motivo de labelFor(): projeto pode ter renomeado 'name'/'permission'.
-        $groupLabelColumn = config('authz.audit.label_columns.groups', 'name');
-        $permissionLabelColumn = config('authz.audit.label_columns.permissions', 'permission');
+        try {
+            $grantId = static::withAuditBatch(function () use ($table, $data) {
+                $grantId = DB::table($table)->insertGetId($data);
+                static::auditEvent(
+                    'permissions_groups',
+                    $grantId,
+                    'created',
+                    static::labeledChanges('permissions_groups', $data, [
+                        'group_id' => 'groups',
+                        'permission_id' => 'permissions',
+                    ])
+                );
 
-        $grantId = static::auditedCreate('permissions_groups', $data, 'granted', [
-            'group' => ['id' => $groupId, 'label' => $group->{$groupLabelColumn} ?? null],
-            'permission' => ['id' => $permissionId, 'label' => $permission->{$permissionLabelColumn} ?? null],
-            'is_granted' => $data['is_granted'],
-            'is_absolute' => $data['is_absolute'],
-        ]);
+                return $grantId;
+            });
+        } catch (\Throwable $e) {
+            static::auditFailureEvent('permissions_groups', 0, 'created.failed', $e, ['data' => $data]);
+            throw $e;
+        }
 
+        event(new PermissionGrantedToGroup($grantId, $groupId, $permissionId, $data));
         static::invalidateForGroup($groupId);
 
         return $grantId;
@@ -565,98 +833,332 @@ class Authorization extends Model
 
     public function updateGroupPermission(int $grantId, array $data): bool
     {
-        $groupId = DB::table(static::table('permissions_groups'))->find($grantId)?->group_id;
-
-        $result = static::auditedUpdate('permissions_groups', $grantId, $data, 'updated');
-
-        if ($groupId) {
-            static::invalidateForGroup($groupId);
+        $oldData = DB::table(static::table('permissions_groups'))->find($grantId);
+        if (!$oldData) {
+            throw new \RuntimeException("Concessão #{$grantId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('permissions_groups');
+        $data['updated_at'] = now();
+
+        $updated = static::withAuditBatch(function () use ($table, $grantId, $data) {
+            $updated = DB::table($table)->where('id', $grantId)->update($data);
+
+            if ($updated) {
+                static::auditEvent(
+                    'permissions_groups',
+                    $grantId,
+                    'updated',
+                    static::labeledChanges('permissions_groups', $data, [
+                        'group_id' => 'groups',
+                        'permission_id' => 'permissions',
+                    ])
+                );
+            }
+
+            return $updated;
+        });
+
+        if ($updated) {
+            event(new PermissionUpdatedInGroup($grantId, (array) $oldData, $data));
+            static::invalidateForGroup($oldData->group_id);
+        }
+
+        return (bool) $updated;
     }
 
     public function revokeGroupPermission(int $grantId, bool $purge = false): bool
     {
-        $groupId = DB::table(static::table('permissions_groups'))->find($grantId)?->group_id;
-
-        $result = static::auditedDelete('permissions_groups', $grantId, $purge ? 'purged' : 'revoked', $purge);
-
-        if ($groupId) {
-            static::invalidateForGroup($groupId);
+        $oldData = DB::table(static::table('permissions_groups'))->find($grantId);
+        if (!$oldData) {
+            throw new \RuntimeException("Concessão #{$grantId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('permissions_groups');
+
+        $deleted = static::withAuditBatch(function () use ($table, $grantId, $purge, $oldData) {
+            $deleted = $purge
+                ? DB::table($table)->where('id', $grantId)->delete()
+                : DB::table($table)->where('id', $grantId)->update(['deleted_at' => now()]);
+
+            if ($deleted) {
+                static::auditEvent('permissions_groups', $grantId, $purge ? 'purged' : 'deleted', (array) $oldData);
+            }
+
+            return $deleted;
+        });
+
+        if ($deleted) {
+            event(new PermissionRevokedFromGroup($grantId, $oldData->group_id, $oldData->permission_id, $purge));
+            static::invalidateForGroup($oldData->group_id);
+        }
+
+        return (bool) $deleted;
     }
 
-    // ==================== CRUD: EXCEÇÃO INDIVIDUAL ====================
+    /**
+     * =================================================================
+     * CRUD — Exceção individual
+     * =================================================================
+     */
 
     public function grantPermissionToUser(int $userId, int $permissionId, array $options = []): int
     {
+        $table = static::table('permissions_users');
         $data = array_merge([
             'is_granted' => true,
-            'data_inicio' => now()->toDateString(),
-            'data_fim' => null,
+            'start_date' => now()->toDateString(),
+            'end_date' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
         ], $options, [
             'user_id' => $userId,
             'permission_id' => $permissionId,
         ]);
 
-        $id = static::auditedCreate('permissions_users', $data, 'granted', [
-            'user_id' => $userId,
-            'permission' => [
-                'id' => $permissionId,
-                'label' => static::labelFor('permissions', $permissionId),
-            ],
-            'is_granted' => $data['is_granted'],
-        ]);
+        try {
+            $overrideId = static::withAuditBatch(function () use ($table, $data) {
+                $overrideId = DB::table($table)->insertGetId($data);
+                static::auditEvent(
+                    'permissions_users',
+                    $overrideId,
+                    'created',
+                    static::labeledChanges('permissions_users', $data, ['permission_id' => 'permissions'])
+                );
 
+                return $overrideId;
+            });
+        } catch (\Throwable $e) {
+            static::auditFailureEvent('permissions_users', 0, 'created.failed', $e, ['data' => $data]);
+            throw $e;
+        }
+
+        event(new PermissionGrantedToUser($overrideId, $userId, $permissionId, $data));
         static::invalidateForUser($userId);
 
-        return $id;
+        return $overrideId;
     }
 
     public function updateUserPermission(int $overrideId, array $data): bool
     {
-        $userId = DB::table(static::table('permissions_users'))->find($overrideId)?->user_id;
-
-        $result = static::auditedUpdate('permissions_users', $overrideId, $data, 'updated');
-
-        if ($userId) {
-            static::invalidateForUser($userId);
+        $oldData = DB::table(static::table('permissions_users'))->find($overrideId);
+        if (!$oldData) {
+            throw new \RuntimeException("Exceção #{$overrideId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('permissions_users');
+        $data['updated_at'] = now();
+
+        $updated = static::withAuditBatch(function () use ($table, $overrideId, $data) {
+            $updated = DB::table($table)->where('id', $overrideId)->update($data);
+
+            if ($updated) {
+                static::auditEvent(
+                    'permissions_users',
+                    $overrideId,
+                    'updated',
+                    static::labeledChanges('permissions_users', $data, ['permission_id' => 'permissions'])
+                );
+            }
+
+            return $updated;
+        });
+
+        if ($updated) {
+            event(new PermissionUpdatedForUser($overrideId, (array) $oldData, $data));
+            static::invalidateForUser($oldData->user_id);
+        }
+
+        return (bool) $updated;
     }
 
     public function revokeUserPermission(int $overrideId, bool $purge = false): bool
     {
-        $userId = DB::table(static::table('permissions_users'))->find($overrideId)?->user_id;
-
-        $result = static::auditedDelete('permissions_users', $overrideId, $purge ? 'purged' : 'revoked', $purge);
-
-        if ($userId) {
-            static::invalidateForUser($userId);
+        $oldData = DB::table(static::table('permissions_users'))->find($overrideId);
+        if (!$oldData) {
+            throw new \RuntimeException("Exceção #{$overrideId} não encontrada.");
         }
 
-        return $result;
+        $table = static::table('permissions_users');
+
+        $deleted = static::withAuditBatch(function () use ($table, $overrideId, $purge, $oldData) {
+            $deleted = $purge
+                ? DB::table($table)->where('id', $overrideId)->delete()
+                : DB::table($table)->where('id', $overrideId)->update(['deleted_at' => now()]);
+
+            if ($deleted) {
+                static::auditEvent('permissions_users', $overrideId, $purge ? 'purged' : 'deleted', (array) $oldData);
+            }
+
+            return $deleted;
+        });
+
+        if ($deleted) {
+            event(new PermissionRevokedFromUser($overrideId, $oldData->user_id, $oldData->permission_id, $purge));
+            static::invalidateForUser($oldData->user_id);
+        }
+
+        return (bool) $deleted;
     }
 
-    // ==================== AUDITORIA: LEITURA ====================
+    /**
+     * =================================================================
+     * Gates, macro de query
+     * =================================================================
+     */
 
     /**
-     * Retorna a trilha de auditoria de um registro específico, mais
-     * recente primeiro. $subjectType é o nome de tabela resolvido (o
-     * mesmo valor gravado por audit() — ver static::table()).
+     * Registra um Gate::define() por permissão do catálogo, nomeado
+     * igual à própria string de permissão. Chamado pelo ServiceProvider
+     * condicional a config('authz.gates.auto_register').
      */
-    public function getAuditTrail(string $subjectType, int $subjectId): array
+    public function registerGates(): void
     {
-        return DB::table(static::auditTable())
-            ->where('subject_type', $subjectType)
-            ->where('subject_id', $subjectId)
-            ->orderByDesc('created_at')
-            ->get()
-            ->map(fn($row) => (array) $row)
-            ->toArray();
+        $permissions = $this->getAssignablePermissions(PermissionFormat::Both);
+
+        foreach ($permissions as $permission) {
+            Gate::define($permission['permission'], function ($user) use ($permission) {
+                return $this->hasPermission($permission['permission'], $user->id);
+            });
+        }
+    }
+
+    /**
+     * Implementa o filtro de listagem 'whereHasPermission' via
+     * whereExists/whereNotExists aninhados, sem N+1 — replica a MESMA
+     * cascata de precedência de computeEffectivePermissions() (exceção
+     * individual > negação absoluta de grupo > concessão de grupo >
+     * negação fraca > padrão negado), mas como predicado SQL em vez de
+     * ler e comparar em PHP.
+     */
+    public function applyWhereHasPermission(
+        \Illuminate\Database\Eloquent\Builder $query,
+        string $permission,
+        string $userIdColumn = 'id'
+    ): \Illuminate\Database\Eloquent\Builder {
+        $permissions = static::table('permissions');
+        $permissionsUsers = static::table('permissions_users');
+        $permissionsGroups = static::table('permissions_groups');
+        $groupsUsers = static::table('groups_users');
+        $groups = static::table('groups');
+
+        $activeTenantId = static::activeTenantId();
+
+        // Qualifica $userIdColumn com a tabela da query externa quando
+        // vier sem qualificação ('id' em vez de 'users.id') — evita
+        // "ambiguous column name" dentro das subqueries abaixo, que
+        // sempre referenciam colunas de outras tabelas também chamadas
+        // 'id'/'user_id'.
+        if (!str_contains($userIdColumn, '.')) {
+            $userIdColumn = $query->getModel()->getTable() . '.' . $userIdColumn;
+        }
+
+        $userGrantedSub = function ($q) use ($permissionsUsers, $permissions, $permission, $userIdColumn) {
+            $q->select(DB::raw(1))
+                ->from("{$permissionsUsers} as pu")
+                ->join("{$permissions} as p", 'p.id', '=', 'pu.permission_id')
+                ->whereColumn('pu.user_id', $userIdColumn)
+                ->where('p.permission', $permission)
+                ->where('pu.is_granted', true)
+                ->whereNull('pu.deleted_at')
+                ->where(function ($q2) {
+                    $q2->whereNull('pu.end_date')->orWhere('pu.end_date', '>=', now()->toDateString());
+                });
+        };
+
+        $userDeniedSub = function ($q) use ($permissionsUsers, $permissions, $permission, $userIdColumn) {
+            $q->select(DB::raw(1))
+                ->from("{$permissionsUsers} as pu")
+                ->join("{$permissions} as p", 'p.id', '=', 'pu.permission_id')
+                ->whereColumn('pu.user_id', $userIdColumn)
+                ->where('p.permission', $permission)
+                ->where('pu.is_granted', false)
+                ->whereNull('pu.deleted_at')
+                ->where(function ($q2) {
+                    $q2->whereNull('pu.end_date')->orWhere('pu.end_date', '>=', now()->toDateString());
+                });
+        };
+
+        $activeGroupsSub = function ($q) use ($groupsUsers, $groups, $userIdColumn, $activeTenantId) {
+            $q->select(DB::raw(1))
+                ->from("{$groupsUsers} as gu")
+                ->join("{$groups} as g", 'g.id', '=', 'gu.group_id')
+                ->whereColumn('gu.user_id', $userIdColumn)
+                ->whereColumn('gu.group_id', 'pg.group_id')
+                ->where('gu.status', 1)
+                ->whereNull('gu.deleted_at')
+                ->whereNull('g.deleted_at')
+                ->where(function ($q2) {
+                    $q2->whereNull('gu.end_date')->orWhere('gu.end_date', '>=', now()->toDateString());
+                })
+                ->when($activeTenantId, function ($q2, $tenantId) {
+                    $q2->where('g.tenant_id', $tenantId);
+                });
+        };
+
+        $groupAbsoluteDenySub = function ($q) use (
+            $permissionsGroups,
+            $permissions,
+            $permission,
+            $activeGroupsSub,
+            $activeTenantId
+        ) {
+            $q->select(DB::raw(1))
+                ->from("{$permissionsGroups} as pg")
+                ->join("{$permissions} as p", 'p.id', '=', 'pg.permission_id')
+                ->where('p.permission', $permission)
+                ->where('pg.is_granted', false)
+                ->where('pg.is_absolute', true)
+                ->whereNull('pg.deleted_at')
+                ->where(function ($q2) {
+                    $q2->whereNull('pg.end_date')->orWhere('pg.end_date', '>=', now()->toDateString());
+                })
+                ->where(function ($q2) use ($activeTenantId) {
+                    $q2->whereNull('p.tenant_id');
+
+                    if ($activeTenantId !== null) {
+                        $q2->orWhere('p.tenant_id', $activeTenantId);
+                    }
+                })
+                ->whereExists($activeGroupsSub);
+        };
+
+        $groupGrantSub = function ($q) use (
+            $permissionsGroups,
+            $permissions,
+            $permission,
+            $activeGroupsSub,
+            $activeTenantId
+        ) {
+            $q->select(DB::raw(1))
+                ->from("{$permissionsGroups} as pg")
+                ->join("{$permissions} as p", 'p.id', '=', 'pg.permission_id')
+                ->where('p.permission', $permission)
+                ->where('pg.is_granted', true)
+                ->whereNull('pg.deleted_at')
+                ->where(function ($q2) {
+                    $q2->whereNull('pg.end_date')->orWhere('pg.end_date', '>=', now()->toDateString());
+                })
+                ->where(function ($q2) use ($activeTenantId) {
+                    $q2->whereNull('p.tenant_id');
+
+                    if ($activeTenantId !== null) {
+                        $q2->orWhere('p.tenant_id', $activeTenantId);
+                    }
+                })
+                ->whereExists($activeGroupsSub);
+        };
+
+        return $query->where(function ($outer) use ($userGrantedSub, $userDeniedSub, $groupAbsoluteDenySub, $groupGrantSub) {
+            // Exceção individual concede => sempre vence.
+            $outer->whereExists($userGrantedSub)
+                // OU: sem exceção individual negando, sem deny absoluto de
+                // grupo, e algum grupo concede.
+                ->orWhere(function ($q) use ($userDeniedSub, $groupAbsoluteDenySub, $groupGrantSub) {
+                    $q->whereNotExists($userDeniedSub)
+                        ->whereNotExists($groupAbsoluteDenySub)
+                        ->whereExists($groupGrantSub);
+                });
+        });
     }
 }

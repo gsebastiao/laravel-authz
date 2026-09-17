@@ -2,12 +2,32 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use Gsebastiao\Auditable\Audit;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Testa a integração de auditoria com gsebastiao/laravel-auditable via
+ * stub (tests/Stubs/Gsebastiao/Auditable) — o pacote real é opcional e
+ * não é uma dependência deste pacote, então os testes usam um stub que
+ * intercepta e registra cada chamada, permitindo confirmar que
+ * AuditsCrud chama a API pública dele com os parâmetros certos.
+ *
+ * getAuditTrail()/applyAuditJoins() usam a CHAVE LÓGICA de tabela
+ * ('groups', não 'auth_groups') — resolvida internamente para o nome
+ * físico antes de delegar para o laravel-auditable.
+ */
 class AuditableCrudTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['authz.audit.enabled' => true]);
+        Audit::reset();
+    }
+
     /** @test */
     public function create_group_insere_e_audita(): void
     {
@@ -15,12 +35,11 @@ class AuditableCrudTest extends TestCase
 
         $this->assertDatabaseHas('auth_groups', ['id' => $id, 'name' => 'financeiro']);
 
-        $trail = (new Authorization())->getAuditTrail('auth_groups', $id);
+        $trail = (new Authorization())->getAuditTrail('groups', $id);
 
         $this->assertCount(1, $trail);
         $this->assertSame('created', $trail[0]['event']);
-        $this->assertNotEmpty($trail[0]['batch']);
-        $this->assertNull($trail[0]['debug_info']); // só preenchido em falha
+        $this->assertSame('auth_groups', $trail[0]['subjectType']);
     }
 
     /** @test */
@@ -31,14 +50,12 @@ class AuditableCrudTest extends TestCase
 
         $auth->updateGroup($id, ['description' => 'descrição nova']);
 
-        $trail = $auth->getAuditTrail('auth_groups', $id);
+        $trail = $auth->getAuditTrail('groups', $id);
         $updateEntry = collect($trail)->firstWhere('event', 'updated');
 
         $this->assertNotNull($updateEntry);
-
-        $changes = json_decode($updateEntry['changes'], true);
-        $this->assertArrayHasKey('description', $changes);
-        $this->assertArrayNotHasKey('name', $changes); // não mudou, não deve aparecer
+        $this->assertArrayHasKey('description', $updateEntry['changes']);
+        $this->assertArrayNotHasKey('name', $updateEntry['changes']); // não mudou, não deve aparecer
     }
 
     /** @test */
@@ -51,7 +68,7 @@ class AuditableCrudTest extends TestCase
 
         $this->assertSoftDeleted('auth_groups', ['id' => $id]);
 
-        $trail = $auth->getAuditTrail('auth_groups', $id);
+        $trail = $auth->getAuditTrail('groups', $id);
         $this->assertTrue(collect($trail)->contains('event', 'deleted'));
     }
 
@@ -65,12 +82,12 @@ class AuditableCrudTest extends TestCase
 
         $this->assertDatabaseMissing('auth_groups', ['id' => $id]);
 
-        $trail = $auth->getAuditTrail('auth_groups', $id);
+        $trail = $auth->getAuditTrail('groups', $id);
         $this->assertTrue(collect($trail)->contains('event', 'purged'));
     }
 
     /** @test */
-    public function update_em_id_inexistente_falha_e_audita_como_failed(): void
+    public function update_em_id_inexistente_lanca_excecao_e_nao_chama_audit(): void
     {
         $auth = new Authorization();
 
@@ -81,10 +98,10 @@ class AuditableCrudTest extends TestCase
             // esperado
         }
 
-        $trail = $auth->getAuditTrail('auth_groups', 99999);
-        $this->assertCount(1, $trail);
-        $this->assertSame('updated.failed', $trail[0]['event']);
-        $this->assertNotNull($trail[0]['debug_info']); // preenchido em falha
+        // A checagem de existência acontece ANTES de qualquer transação
+        // ou tentativa de escrita — não há nada a auditar como falha
+        // aqui, porque não houve tentativa de escrita real.
+        $this->assertCount(0, Audit::$calls);
     }
 
     /** @test */
@@ -93,6 +110,8 @@ class AuditableCrudTest extends TestCase
         $auth = new Authorization();
         $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar');
 
+        Audit::reset();
+
         try {
             $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar duplicado');
             $this->fail('Esperava exceção por violação de unique em permission.');
@@ -100,40 +119,36 @@ class AuditableCrudTest extends TestCase
             // esperado — SQLite lança PDOException/QueryException por unique constraint
         }
 
-        $failedCount = DB::table('auth_audit_table')
-            ->where('subject_type', 'auth_permissions')
-            ->where('event', 'created.failed')
-            ->count();
+        $failCalls = array_filter(Audit::$calls, fn($c) => $c['method'] === 'logFailure');
+        $this->assertCount(1, $failCalls);
 
-        $this->assertSame(1, $failedCount);
+        $failCall = array_values($failCalls)[0];
+        $this->assertSame('auth_permissions', $failCall['subjectType']);
+        $this->assertSame('created.failed', $failCall['event']);
     }
 
     /** @test */
-    public function operacoes_na_mesma_transacao_compartilham_o_mesmo_batch(): void
+    public function auditoria_de_sucesso_acontece_dentro_da_mesma_transacao_da_escrita(): void
     {
         $auth = new Authorization();
 
-        DB::transaction(function () use ($auth) {
-            $groupId = $auth->createGroup('financeiro');
-            $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar');
-        });
+        // withAuditBatch() delega para Audit::transaction() quando a
+        // auditoria está ativa -- se auditEvent() estivesse fora do
+        // callback de escrita, o rollback abaixo não a desfaria; como
+        // está corretamente dentro, o rollback desfaz tudo junto.
+        $countBefore = DB::table('auth_groups')->count();
 
-        $batches = DB::table('auth_audit_table')->pluck('batch')->unique();
+        try {
+            DB::transaction(function () use ($auth) {
+                $auth->createGroup('dentroDaTransacao');
+                throw new \RuntimeException('Força rollback');
+            });
+        } catch (\RuntimeException $e) {
+            // esperado
+        }
 
-        $this->assertCount(1, $batches);
-    }
-
-    /** @test */
-    public function operacoes_fora_de_transacao_tem_batches_diferentes(): void
-    {
-        $auth = new Authorization();
-
-        $auth->createGroup('financeiro');
-        $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar');
-
-        $batches = DB::table('auth_audit_table')->pluck('batch')->unique();
-
-        $this->assertCount(2, $batches);
+        $countAfter = DB::table('auth_groups')->count();
+        $this->assertSame($countBefore, $countAfter);
     }
 
     /** @test */
@@ -144,7 +159,7 @@ class AuditableCrudTest extends TestCase
         $id = (new Authorization())->createGroup('financeiro');
 
         $this->assertDatabaseHas('auth_groups', ['id' => $id]);
-        $this->assertSame(0, DB::table('auth_audit_table')->count());
+        $this->assertCount(0, Audit::$calls);
     }
 
     /** @test */
@@ -161,9 +176,9 @@ class AuditableCrudTest extends TestCase
 
         $grantId = $auth->grantPermissionToGroup($groupId, $permId);
 
-        $trail = $auth->getAuditTrail('auth_permissions_groups', $grantId);
-        $changes = json_decode($trail[0]['changes'], true);
+        $trail = $auth->getAuditTrail('permissions_groups', $grantId);
+        $createEntry = collect($trail)->firstWhere('event', 'created');
 
-        $this->assertSame('Time Financeiro', $changes['group']['label']);
+        $this->assertSame('Time Financeiro', $createEntry['changes']['group']['label']);
     }
 }

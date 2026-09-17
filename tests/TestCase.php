@@ -47,7 +47,7 @@ abstract class TestCase extends BaseTestCase
         // projeto host, não é responsabilidade dele criá-la. Lê o nome
         // via config para que testes possam simular um projeto que já
         // renomeou essa tabela (ex: 'usuarios').
-        Schema::create(config('authz.tables.user', 'users'), function ($table) {
+        Schema::create(config('authz.tables.users', 'users'), function ($table) {
             $table->id();
             $table->string('name')->nullable();
             $table->timestamps();

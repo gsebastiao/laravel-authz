@@ -31,7 +31,7 @@ class TenantScopeTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -62,7 +62,7 @@ class TenantScopeTest extends TestCase
         $this->addToGroup($userId, $grupoTenantA);
         $this->addToGroup($userId, $grupoTenantB);
 
-        $this->app->bind(TenantContext::class, fn () => new class implements TenantContext {
+        $this->app->bind(TenantContext::class, fn() => new class implements TenantContext {
             public function id(): int|string|null
             {
                 return 1;

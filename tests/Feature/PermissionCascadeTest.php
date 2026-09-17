@@ -42,7 +42,7 @@ class PermissionCascadeTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -54,7 +54,7 @@ class PermissionCascadeTest extends TestCase
             'user_id' => $userId,
             'permission_id' => $permissionId,
             'is_granted' => $granted,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -67,7 +67,7 @@ class PermissionCascadeTest extends TestCase
             'permission_id' => $permissionId,
             'is_granted' => $granted,
             'is_absolute' => $absolute,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

@@ -37,7 +37,7 @@ class CacheableTest extends TestCase
             'user_id' => $userId,
             'permission_id' => $permissionId,
             'is_granted' => true,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -82,7 +82,7 @@ class CacheableTest extends TestCase
         $permId = $this->permission('financeiro.aprovar');
         $this->grantDirectly($userId, $permId);
 
-        $this->app->bind(TenantContext::class, fn () => new class implements TenantContext {
+        $this->app->bind(TenantContext::class, fn() => new class implements TenantContext {
             public function id(): int|string|null
             {
                 return 1;
@@ -91,7 +91,7 @@ class CacheableTest extends TestCase
 
         $this->assertTrue((new Authorization())->hasPermission('financeiro.aprovar', $userId));
 
-        $this->app->bind(TenantContext::class, fn () => new class implements TenantContext {
+        $this->app->bind(TenantContext::class, fn() => new class implements TenantContext {
             public function id(): int|string|null
             {
                 return 2;
@@ -227,7 +227,7 @@ class CacheableTest extends TestCase
             'user_id' => $userId,
             'group_id' => $groupId2,
             'status' => 1,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);

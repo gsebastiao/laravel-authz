@@ -33,7 +33,7 @@ class PermissionFormatTest extends TestCase
             'user_id' => $userId,
             'permission_id' => $permissionId,
             'is_granted' => true,
-            'data_inicio' => now()->toDateString(),
+            'start_date' => now()->toDateString(),
             'created_at' => now(),
             'updated_at' => now(),
         ]);
