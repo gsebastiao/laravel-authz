@@ -1,0 +1,14 @@
+v2.0.0: revisão completa do pacote antes da publicação
+
+- Corrige erro fatal de sintaxe nos 5 models mutáveis
+- Move os 15 métodos de CRUD para Authorization.php
+- Adiciona as 16 classes de evento em falta
+- Implementa auditoria condicional via laravel-auditable (class_alias)
+- Adiciona Gates auto-registrados, Middleware (movido para o path PSR-4 correto), macro whereHasPermission, Blade directives
+- Reescreve SyncPermissionsCommand com lógica real
+- Remove HierarchicalTenantContext.php e can()/cannot() de helpers.php
+- BREAKING: nova coluna gerada tenant_key em auth_groups (corrige bug de unicidade de nome de grupo por tenant)
+- BREAKING: Middleware movido de Http/Middleware.php para Http/Middleware/PermissionMiddleware.php
+- Corrige bug crítico: defesa de tenant desligada quando não há tenant ativo (when() com condição sempre falsy)
+- Corrige coluna ambígua em applyWhereHasPermission()
+- README e CHANGELOG atualizados
