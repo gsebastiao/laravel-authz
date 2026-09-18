@@ -1,0 +1,79 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/*
+ * laravel-authz — migration 2 de 2: permissões e concessões.
+ *
+ * Precisa rodar DEPOIS de create_authz_groups_tables (usa a tabela de grupos).
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $users = config('authz.tables.users', 'users');
+        $groups = config('authz.tables.groups', 'auth_groups');
+        $permissions = config('authz.tables.permissions', 'auth_permissions');
+        $permissionsGroups = config('authz.tables.permissions_groups', 'auth_permissions_groups');
+        $permissionsUsers = config('authz.tables.permissions_users', 'auth_permissions_users');
+
+        // Catálogo de permissões (ex: "financeiro.aprovar").
+        Schema::create($permissions, function (Blueprint $table) {
+            $table->id();
+            $table->string('permission', 255)->unique(); // único em todo o sistema
+            $table->string('module', 100);
+            $table->string('action', 100);
+            $table->string('label', 150);
+            $table->text('description')->nullable();
+            $table->unsignedBigInteger('order')->nullable();
+            $table->unsignedTinyInteger('status')->default(1); // 1 = ativa, 0 = desativada
+            $table->unsignedBigInteger('tenant_id')->nullable()->index(); // null = global
+
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->index('module');
+            $table->index('status');
+        });
+
+        // Regras de permissão por grupo (conceder ou negar).
+        Schema::create($permissionsGroups, function (Blueprint $table) use ($groups, $permissions) {
+            $table->id();
+            $table->foreignId('group_id')->constrained($groups)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->foreignId('permission_id')->constrained($permissions)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->unsignedTinyInteger('is_granted')->default(1); // 1 = concede, 0 = nega
+            $table->boolean('is_absolute')->default(false);        // negação que vence outros grupos
+            $table->date('start_date');
+            $table->date('end_date')->nullable();
+
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->unique(['group_id', 'permission_id'], 'unique_group_permission');
+        });
+
+        // Exceções individuais por usuário (conceder ou negar) — sempre vencem os grupos.
+        Schema::create($permissionsUsers, function (Blueprint $table) use ($permissions, $users) {
+            $table->id();
+            $table->foreignId('user_id')->constrained($users)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->foreignId('permission_id')->constrained($permissions)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->unsignedTinyInteger('is_granted')->default(1);
+            $table->date('start_date');
+            $table->date('end_date')->nullable();
+
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->index(['user_id', 'permission_id']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists(config('authz.tables.permissions_users', 'auth_permissions_users'));
+        Schema::dropIfExists(config('authz.tables.permissions_groups', 'auth_permissions_groups'));
+        Schema::dropIfExists(config('authz.tables.permissions', 'auth_permissions'));
+    }
+};

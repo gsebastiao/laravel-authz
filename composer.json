@@ -1,21 +1,32 @@
 {
     "name": "gsebastiao/laravel-authz",
-    "description": "RBAC de autenticacao e autorizacao para Laravel, com escopo de tenant opcional.",
+    "description": "Grupos e permissões (RBAC) para Laravel, simples de começar: cascata de prioridade, validade por data, multi-tenant, cache e auditoria opcionais.",
+    "keywords": [
+        "laravel",
+        "rbac",
+        "permissions",
+        "roles",
+        "acl",
+        "authorization",
+        "multi-tenant"
+    ],
     "type": "library",
     "license": "MIT",
     "authors": [
         {
-            "name": "gsebastiao"
+            "name": "Gerson Sebastião Cossa",
+            "email": "gsebastiao@example.github.com",
+            "homepage": "https://github.com/gsebastiao"
         }
     ],
     "require": {
         "php": "^8.2",
-        "illuminate/support": "^12.0|^13.0",
-        "illuminate/database": "^12.0|^13.0"
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "illuminate/database": "^11.0|^12.0|^13.0"
     },
     "require-dev": {
-        "orchestra/testbench": "^10.0|^11.0",
-        "phpunit/phpunit": "^11.0"
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "pestphp/pest": "^2.0|^3.0|^4.0|^5.0"
     },
     "suggest": {
         "gsebastiao/laravel-auditable": "Permite auditoria automática dos CRUDs deste pacote (config('authz.audit.enabled'))."
@@ -44,6 +55,12 @@
     },
     "scripts": {
         "test": "vendor/bin/phpunit"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        },
+        "sort-packages": true
     },
     "minimum-stability": "stable",
     "prefer-stable": true

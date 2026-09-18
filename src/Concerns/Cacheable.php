@@ -7,17 +7,15 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Cache-aside para getUserGroups()/getEffectivePermissions(), com
- * invalidação por registro de chaves em vez de tags ou busca por padrão —
- * funciona identicamente em file, database, redis, memcached, array, ou
- * qualquer outro driver que o Cache facade do Laravel suporte, porque
- * nunca fala com um driver específico diretamente.
+ * Cache de getUserGroups() e getEffectivePermissions().
  *
- * Cada put() nesta trait também grava a própria chave numa lista por
- * usuário ('registro'). forgetUserCache() lê essa lista e apaga cada
- * chave dela, depois apaga a própria lista — é assim que a invalidação
- * funciona em drivers que não suportam tags nem KEYS/SCAN (file,
- * database), sem precisar de um comando específico de driver nenhum.
+ * Invalidação por "versão": cada chave de cache inclui um token global e
+ * um token por usuário. Invalidar = trocar o token. As entradas antigas
+ * simplesmente deixam de ser lidas e expiram sozinhas pelo TTL.
+ *
+ * Funciona com qualquer driver do Laravel (file, database, redis,
+ * memcached, array...) e continua correto mesmo se o driver descartar
+ * alguma chave por falta de memória.
  */
 trait Cacheable
 {
@@ -40,7 +38,7 @@ trait Cacheable
 
     protected static function cachePrefix(): string
     {
-        return config('authz.cache.prefix', 'authz');
+        return (string) config('authz.cache.prefix', 'authz');
     }
 
     protected static function invalidateOnWrite(): bool
@@ -48,103 +46,68 @@ trait Cacheable
         return (bool) config('authz.cache.invalidate_on_write', true);
     }
 
-    protected static function permissionsCacheKey(int $userId): string
-    {
-        return static::cachePrefix() . ':permissions:user:' . $userId . ':tenant:' . (self::activeTenantId() ?? 'global');
-    }
-
-    protected static function groupsCacheKey(int $userId): string
-    {
-        return static::cachePrefix() . ':groups:user:' . $userId . ':tenant:' . (self::activeTenantId() ?? 'global');
-    }
-
-    protected static function registryKey(int $userId): string
-    {
-        return static::cachePrefix() . ':registry:user:' . $userId;
-    }
-
     /**
-     * Cache-aside genérico: retorna do cache se existir; senão, calcula
-     * via $compute, guarda, registra a chave para invalidação futura, e
-     * retorna. Com o cache desligado (padrão), $compute() roda sempre,
-     * sem nenhum outro efeito colateral — comportamento idêntico a antes
-     * de o cache existir.
+     * Lê do cache ou calcula. Com o cache desligado (padrão), sempre calcula.
      */
-    protected static function rememberForUser(int $userId, string $key, \Closure $compute): mixed
+    protected static function rememberForUser(int $userId, string $type, \Closure $compute): mixed
     {
         if (!static::cacheEnabled()) {
             return $compute();
         }
 
         $store = static::cacheStore();
+        $key = implode(':', [
+            static::cachePrefix(),
+            $type,
+            'user', $userId,
+            'tenant', static::activeTenantId() ?? 'global',
+            'v', static::versionToken($store, static::globalVersionKey()) . '.' . static::versionToken($store, static::userVersionKey($userId)),
+        ]);
 
-        if ($store->has($key)) {
-            return $store->get($key);
-        }
-
-        $value = $compute();
-
-        $store->put($key, $value, static::cacheTtl());
-        static::registerCacheKey($store, $userId, $key);
-
-        return $value;
+        return $store->remember($key, static::cacheTtl(), $compute);
     }
 
-    protected static function registerCacheKey(Repository $store, int $userId, string $key): void
+    protected static function globalVersionKey(): string
     {
-        $registryKey = static::registryKey($userId);
-        $keys = $store->get($registryKey, []);
+        return static::cachePrefix() . ':version:global';
+    }
 
-        if (!in_array($key, $keys, true)) {
-            $keys[] = $key;
-            $store->put($registryKey, $keys, static::cacheTtl());
+    protected static function userVersionKey(int $userId): string
+    {
+        return static::cachePrefix() . ':version:user:' . $userId;
+    }
+
+    protected static function versionToken(Repository $store, string $key): string
+    {
+        $token = $store->get($key);
+
+        if (!is_string($token) || $token === '') {
+            $token = bin2hex(random_bytes(6));
+            $store->forever($key, $token);
         }
+
+        return $token;
     }
 
     /**
-     * Invalida todo cache deste pacote para um usuário específico.
-     * Funciona independente de config('authz.cache.enabled') — se algo
-     * ficou em cache enquanto estava ligado, isto ainda precisa conseguir
-     * limpar mesmo que o cache tenha sido desligado depois. Chamável
-     * manualmente a qualquer momento, além de usado internamente pelas
-     * funções de CRUD (ver invalidateForUser()/invalidateForGroup()).
+     * Esquece o cache de UM usuário. Pode ser chamado a qualquer momento,
+     * inclusive com o cache desligado.
      */
     public static function forgetUserCache(int $userId): void
     {
-        $store = static::cacheStore();
-        $registryKey = static::registryKey($userId);
-        $keys = $store->get($registryKey, []);
-
-        foreach ($keys as $key) {
-            $store->forget($key);
-        }
-
-        $store->forget($registryKey);
+        static::cacheStore()->forget(static::userVersionKey($userId));
     }
 
     /**
-     * Invalida o cache de todo membro ativo de um grupo — usado quando
-     * uma concessão do PRÓPRIO grupo muda (afeta todo membro dele, não só
-     * quem fez a mudança). Não tenta ser mais esperto que isso: consulta
-     * quem é membro agora e invalida cada um, sem tags nem heurística.
+     * Esquece o cache de TODOS os usuários. Use depois de mexer nas
+     * tabelas do pacote direto no banco (seeders, imports, SQL manual).
+     * Também disponível como: php artisan authz:cache-reset
      */
-    protected static function forgetGroupMembersCache(int $groupId): void
+    public static function flushCache(): void
     {
-        $userIds = DB::table(static::table('groups_users'))
-            ->where('group_id', $groupId)
-            ->whereNull('deleted_at')
-            ->pluck('user_id');
-
-        foreach ($userIds as $userId) {
-            static::forgetUserCache($userId);
-        }
+        static::cacheStore()->forget(static::globalVersionKey());
     }
 
-    /**
-     * Chamado pelas funções de CRUD que afetam só um usuário. Respeita
-     * authz.cache.invalidate_on_write — forgetUserCache() em si continua
-     * disponível pra chamada manual mesmo com isto desligado.
-     */
     protected static function invalidateForUser(int $userId): void
     {
         if (static::invalidateOnWrite()) {
@@ -153,13 +116,35 @@ trait Cacheable
     }
 
     /**
-     * Chamado pelas funções de CRUD que afetam um grupo inteiro (uma
-     * concessão de permissão do grupo, não uma exceção individual).
+     * @param  array<int>|null  $userIds  membros já conhecidos (usado quando o
+     *                                   grupo é apagado e não dá mais para consultar)
      */
-    protected static function invalidateForGroup(int $groupId): void
+    protected static function invalidateForGroup(int $groupId, ?array $userIds = null): void
+    {
+        if (!static::invalidateOnWrite()) {
+            return;
+        }
+
+        foreach ($userIds ?? static::groupMemberIds($groupId) as $userId) {
+            static::forgetUserCache((int) $userId);
+        }
+    }
+
+    protected static function invalidateEveryone(): void
     {
         if (static::invalidateOnWrite()) {
-            static::forgetGroupMembersCache($groupId);
+            static::flushCache();
         }
+    }
+
+    /** @return array<int> */
+    protected static function groupMemberIds(int $groupId): array
+    {
+        return DB::table(static::table('groups_users'))
+            ->where('group_id', $groupId)
+            ->distinct()
+            ->pluck('user_id')
+            ->map(fn($id) => (int) $id)
+            ->all();
     }
 }

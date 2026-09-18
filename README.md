@@ -1,451 +1,373 @@
-# Laravel Authorization
+# Laravel Authz
 
 [![Latest Version](https://img.shields.io/packagist/v/gsebastiao/laravel-authz.svg)](https://packagist.org/packages/gsebastiao/laravel-authz)
-[![License](https://img.shields.io/packagist/l/gsebastiao/laravel-authz.svg)](LICENSE.md)
 [![PHP Version](https://img.shields.io/packagist/php-v/gsebastiao/laravel-authz.svg)](composer.json)
+[![License](https://img.shields.io/packagist/l/gsebastiao/laravel-authz.svg)](LICENSE.md)
 
-RBAC (grupos, permissões, cascata de prioridade) para Laravel — com escopo
-de multi-tenant, auditoria e cache, todos opcionais e desligados por padrão.
-Instale e comece a checar permissões em minutos; ligue tenant, auditoria ou
-cache só quando (e se) o projeto realmente precisar.
+Controle **quem pode fazer o quê** no seu sistema Laravel usando **grupos** e **permissões**.
+
+```php
+if ($user->hasPermission('financeiro.aprovar')) {
+    // mostra o botão "Aprovar"
+}
+```
+
+- Coloque usuários em grupos ("Financeiro", "RH"...) e dê permissões aos grupos.
+- Dê ou negue uma permissão a um usuário específico, quando precisar de uma exceção.
+- Defina validade por data ("tem acesso só até 31/12").
+- Funciona com `@can`, `Gate`, Policies e middleware de rota do Laravel.
+- Multi-tenant, cache e auditoria são **opcionais** e começam desligados.
+
+---
 
 ## Índice
 
-- [Requisitos](#requisitos)
-- [Instalação](#instalação)
-- [Início rápido](#início-rápido)
-- [Como funciona](#como-funciona)
-- [Nomes de tabela customizados](#nomes-de-tabela-customizados)
-- [Formato do retorno de permissões](#formato-do-retorno-de-permissões)
-- [CRUD](#crud)
-- [Auditoria (via laravel-auditable)](#auditoria-via-laravel-auditable)
-- [Gates, Middleware e Blade](#gates-middleware-e-blade)
-- [Filtrar listagens por permissão (whereHasPermission)](#filtrar-listagens-por-permissão-wherehaspermission)
-- [Sincronizar o catálogo de permissões via config](#sincronizar-o-catálogo-de-permissões-via-config)
-- [Cache](#cache)
-- [Escopo de tenant](#escopo-de-tenant-sede-delegação-departamento-agência)
-- [O que este pacote deliberadamente não faz](#o-que-este-pacote-deliberadamente-não-faz)
-- [Perguntas frequentes](#perguntas-frequentes)
-- [Testes](#testes)
-- [Versionamento](#versionamento)
+1. [Requisitos](#1-requisitos)
+2. [Instalação](#2-instalação)
+3. [Primeiros passos (5 minutos)](#3-primeiros-passos-5-minutos)
+4. [Onde checar permissões](#4-onde-checar-permissões)
+5. [Como a decisão é tomada](#5-como-a-decisão-é-tomada)
+6. [Referência rápida](#6-referência-rápida)
+7. [Recursos opcionais](#7-recursos-opcionais) — catálogo no config, cache, multi-tenant, auditoria, nomes de tabela
+8. [Problemas comuns](#8-problemas-comuns)
+9. [Atualizando da versão 2.x](#9-atualizando-da-versão-2x)
 
-## Requisitos
+---
 
-- PHP `^8.2`
-- Laravel `^12.0` ou `^13.0`
-- Uma tabela `users` (ou equivalente — [ver abaixo](#nomes-de-tabela-customizados)) já existente no projeto
+## 1. Requisitos
 
-## Instalação
+- PHP 8.2 ou superior
+- Laravel 11, 12 ou 13
+- Uma tabela de usuários (a `users` padrão do Laravel serve)
+
+## 2. Instalação
+
+**Passo 1 — instale o pacote:**
 
 ```bash
 composer require gsebastiao/laravel-authz
 ```
 
-```bash
-php artisan vendor:publish --tag=authz-config
-```
+**Passo 2 — rode o instalador:**
 
 ```bash
-php artisan migrate
+php artisan authz:install
 ```
 
-Isso cria 5 tabelas: `auth_groups`, `auth_groups_users`,
-`auth_permissions`, `auth_permissions_groups`, `auth_permissions_users`. O
-pacote não cria a tabela `users` — assume que ela já existe no projeto host.
-Auditoria (`auth_audit_table` e afins) é responsabilidade do pacote
-`gsebastiao/laravel-auditable`, instalado à parte quando necessário.
+Ele cria o arquivo `config/authz.php`, copia as migrations para
+`database/migrations` e pergunta se você quer rodar o `migrate`. São criadas 5
+tabelas: `auth_groups`, `auth_groups_users`, `auth_permissions`,
+`auth_permissions_groups` e `auth_permissions_users`.
 
-## Início rápido
+> Sua tabela de usuários não se chama `users`? Responda **não** quando o
+> instalador perguntar, ajuste `tables.users` em `config/authz.php` e depois
+> rode `php artisan migrate`.
+
+**Passo 3 — adicione o trait no model de usuário:**
 
 ```php
-use Gsebastiao\LaravelAuthz\Models\Authorization;
+// app/Models/User.php
+use Gsebastiao\LaravelAuthz\Traits\HasAuthz;
 
-$auth = new Authorization();
+class User extends Authenticatable
+{
+    use HasAuthz;
 
-// Criar um grupo e conceder uma permissão a ele
-$permId = $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar solicitação');
-$groupId = $auth->createGroup('financeiro', 'Time financeiro');
-$auth->grantPermissionToGroup($groupId, $permId);
-
-// Colocar um usuário no grupo
-$auth->addUserToGroup($userId, $groupId);
-
-// Checar
-$auth->hasPermission('financeiro.aprovar', $userId); // true
-```
-
-Isso é o suficiente pra a maioria dos projetos. Tenant, cache e detalhes da
-auditoria são para quando o projeto crescer — nada disso precisa ser
-configurado agora.
-
-## Como funciona
-
-Duas ideias carregam o pacote inteiro. Vale entender as duas antes do resto.
-
-**1. O usuário sempre tem a última palavra.** As permissões efetivas de um
-usuário vêm de duas fontes — o que foi concedido/negado a ele
-individualmente, e o que os grupos dele concedem/negam — e a ordem de
-prioridade é fixa:
-
-| # | Fonte | Resultado |
-| --- | --- | --- |
-| 1 | Negação individual no usuário | **Negado**, sempre — nenhum grupo reverte isso |
-| 2 | Concessão individual no usuário | **Concedido**, sempre |
-| 3 | Negação *absoluta* de algum grupo do usuário | **Negado** — vence concessão de outro grupo |
-| 4 | Concessão de algum grupo do usuário | **Concedido** |
-| 5 | Só há negação *não-absoluta* de grupo | **Negado** |
-| 6 | Nada em lugar nenhum | **Negado** (padrão) |
-
-Regra prática: se ninguém disse nada sobre o usuário especificamente, os
-grupos dele decidem. Se nem os grupos disserem nada, a resposta é negado.
-"Negação absoluta" (`is_absolute = true` na concessão do grupo) existe para
-regras que nenhum outro grupo do usuário pode driblar — ex: uma regra de
-compliance que vence mesmo se o usuário também estiver num grupo que
-concede.
-
-**2. Tenant é opcional e começa desligado.** Sem nenhuma configuração, o
-pacote se comporta como se o projeto tivesse um usuário só — não existe
-partição nenhuma. Se um dia o projeto precisar de Sede, Empresa, Escola,
-Filial ou qualquer outro nível de particionamento, existe um ponto de
-extensão pronto — [ver a seção de tenant](#escopo-de-tenant-sede-delegação-departamento-agência)
-— sem precisar reescrever nada do que já existe.
-
-## Nomes de tabela customizados
-
-Se o projeto já usa `auth_groups`, `auth_permissions`, `users` etc. para
-outra coisa, publique e edite o config antes de rodar a migration:
-
-```bash
-php artisan vendor:publish --tag=authz-config
-```
-
-```bash
-php artisan vendor:publish --tag=authz-migrations
-```
-
-```php
-// config/authz.php
-'tables' => [
-    'groups' => 'meu_nome_de_grupos',
-    'user' => 'usuarios', // tabela de usuários do projeto, se não for 'users'
     // ...
+}
+```
+
+Pronto. O pacote já está funcionando.
+
+## 3. Primeiros passos (5 minutos)
+
+Vamos montar um exemplo real: o grupo **Financeiro** pode **ver** e
+**aprovar** pagamentos.
+
+### 3.1 Declare as permissões
+
+Em `config/authz.php`:
+
+```php
+'permissions' => [
+    'financeiro.ver',
+    'financeiro.aprovar',
 ],
 ```
 
-Editar o config depois de rodar a migration não renomeia tabelas já
-criadas — o config precisa refletir os nomes finais antes do `migrate`.
-
-## Formato do retorno de permissões
-
-`getEffectivePermissions()` é o único método de leitura de dados de
-permissão do pacote. O chamador escolhe o formato via
-`Gsebastiao\LaravelAuthz\Enums\PermissionFormat`:
-
-```php
-use Gsebastiao\LaravelAuthz\Enums\PermissionFormat;
-
-// Padrão — id e permission juntos:
-// [['id' => 3, 'permission' => 'financeiro.aprovar'], ...]
-$auth->getEffectivePermissions($userId);
-
-// Só os ids: [3, 7, 12]
-$auth->getEffectivePermissions($userId, PermissionFormat::Id);
-
-// Só as strings: ['financeiro.aprovar', 'usuario.criar']
-$auth->getEffectivePermissions($userId, PermissionFormat::Permission);
-```
-
-`hasPermission()` aceita id (int) ou nome (string) — o tipo do argumento
-decide a comparação:
-
-```php
-$auth->hasPermission('financeiro.aprovar', $userId); // por nome
-$auth->hasPermission(7, $userId);                    // por id
-```
-
-Uma string numérica (`'7'`) continua sendo tratada como nome, nunca como id
-— só um `int` literal ativa a busca por id.
-
-`getUserGroups($userId)` retorna os grupos ativos do usuário —
-`[['id' => 1, 'name' => 'financeiro', 'description' => '...'], ...]`.
-
-## CRUD
-
-Toda escrita nas 5 tabelas mutáveis (`auth_groups`, `auth_groups_users`,
-`auth_permissions`, `auth_permissions_groups`, `auth_permissions_users`)
-passa por uma função de CRUD dedicada, sempre dentro de uma transação de
-banco (com ou sem auditoria ligada — ver seção seguinte), e dispara um
-Event do Laravel próprio por operação (`GroupCreated`, `GroupUpdated`,
-`PermissionGrantedToGroup`, etc. — 16 classes em `Events\`).
-
-```php
-$auth = new Authorization();
-
-// Grupos
-$groupId = $auth->createGroup('financeiro', 'Time financeiro');
-$auth->updateGroup($groupId, ['description' => 'nova descrição']);
-$auth->deleteGroup($groupId);              // soft delete
-$auth->deleteGroup($groupId, purge: true); // exclusão física
-
-// Membros de grupo
-$membershipId = $auth->addUserToGroup($userId, $groupId);
-$auth->updateGroupMembership($membershipId, ['is_primary' => 1]);
-$auth->removeUserFromGroup($membershipId);
-
-// Catálogo de permissões
-$permId = $auth->createPermission('financeiro.aprovar', 'financeiro', 'aprovar', 'Aprovar');
-$auth->updatePermission($permId, ['label' => 'Aprovar solicitação']);
-$auth->deletePermission($permId);
-
-// Concessão por grupo — valida tenant antes de gravar, ver seção de tenant
-$grantId = $auth->grantPermissionToGroup($groupId, $permId);
-$auth->updateGroupPermission($grantId, ['is_absolute' => true]);
-$auth->revokeGroupPermission($grantId);
-
-// Exceção individual
-$overrideId = $auth->grantPermissionToUser($userId, $permId, ['is_granted' => false]);
-$auth->updateUserPermission($overrideId, ['end_date' => '2026-12-31']);
-$auth->revokeUserPermission($overrideId);
-```
-
-Todo `updateX`/`deleteX`/`revokeX`/`removeX` lança `\RuntimeException`
-explícita se o id não existir — nunca falha silenciosamente retornando
-`false`.
-
-`createGroup()` deriva `tenant_id` sempre do tenant ativo — não é parâmetro
-aceito, para não abrir uma forma de criar um grupo apontando pra outro
-tenant por engano. `createPermission()` é o oposto: `tenant_id` é parâmetro
-explícito e `null` por padrão (global), porque a maioria das permissões deve
-ser global — exclusiva de um tenant é a exceção deliberada.
-
-`grantPermissionToGroup()` valida, antes de gravar, que a permissão é
-visível ao tenant do grupo (global, ou exclusiva do mesmo tenant). Falha
-nessa validação dispara o evento `PermissionGrantToGroupRejected`, grava
-`grant.rejected` na auditoria (se ligada) e lança `\RuntimeException` —
-nada é gravado no banco.
-
-## Auditoria (via laravel-auditable)
-
-Este pacote não tem motor de auditoria próprio — quando
-`gsebastiao/laravel-auditable` está instalado **e** `authz.audit.enabled`
-está ligado, toda função de CRUD acima grava automaticamente através dele.
-Sem o pacote instalado, ou com a opção desligada, tudo funciona
-normalmente (mesmas transações, mesmos Events) só que sem gravar nada de
-auditoria — nunca lança erro por falta do pacote opcional.
+E rode:
 
 ```bash
-composer require gsebastiao/laravel-auditable
+php artisan authz:sync-permissions
 ```
+
+> Dica: use o formato `modulo.acao`. O pacote separa o módulo (`financeiro`) e a
+> ação (`aprovar`) sozinho. Rode este comando sempre que mudar a lista (ex: no
+> deploy) — ele cria as novas, atualiza as alteradas e **nunca apaga nada**.
+
+### 3.2 Crie o grupo e dê as permissões a ele
+
+Num seeder, num `php artisan tinker` ou numa tela de administração:
 
 ```php
-// config/authz.php
-'audit' => [
-    'enabled' => env('AUTHZ_AUDIT_ENABLED', false),
-],
+use Gsebastiao\LaravelAuthz\Facades\Authz;
+
+$financeiro = Authz::createGroup('Financeiro', 'Equipe do financeiro');
+
+Authz::grantPermissionToGroup($financeiro, Authz::resolvePermissionId('financeiro.ver'));
+Authz::grantPermissionToGroup($financeiro, Authz::resolvePermissionId('financeiro.aprovar'));
 ```
+
+### 3.3 Coloque um usuário no grupo
 
 ```php
-// Trilha de auditoria de um registro específico — chave LÓGICA de
-// tabela ('groups', não 'auth_groups'), resolvida internamente
-$auth->getAuditTrail('groups', $groupId);
+$user = User::find(1);
+
+$user->assignRole('Financeiro');
 ```
 
-### Como a resolução condicional funciona
-
-Os 5 models do pacote (`Group`, `Permission`, `GroupUser`,
-`PermissionGroup`, `PermissionUser`) usam
-`Gsebastiao\LaravelAuthz\Concerns\ResolvedAuditableTrait` — um alias
-resolvido uma única vez por processo, antes de qualquer model carregar
-(via `composer.json > autoload > files`), para o trait real do
-laravel-auditable quando ele existe, ou para um trait vazio
-(`NoOpAuditable`) caso contrário. Não é possível aplicar uma trait a uma
-classe já declarada — por isso a resolução acontece cedo, via
-`class_alias()`, e não dentro de um `boot()` de ServiceProvider.
-
-### Colunas de "criado por / em" em listagens
-
-`applyAuditJoins()` anexa colunas a uma query via `LEFT JOIN`, sem
-consulta N+1 — no-op transparente (retorna a query como veio) se a
-auditoria não estiver ativa:
+### 3.4 Cheque
 
 ```php
-use Illuminate\Support\Facades\DB;
-
-$query = DB::table('auth_groups')->where('status', 1);
-$auth->applyAuditJoins('groups', $query)->get();
+$user->hasRole('Financeiro');              // true
+$user->hasPermission('financeiro.aprovar'); // true
+$user->can('financeiro.aprovar');           // true (integração com o Gate do Laravel)
+$user->hasPermission('rh.ver');             // false
 ```
 
-`$events` (terceiro parâmetro) sobrescreve
-`config('authz.audit.join_events')` (padrão `['created', 'updated']`).
+É isso. Todo o resto do pacote são variações desses quatro passos.
 
-### Coluna de rótulo legível configurável
+## 4. Onde checar permissões
 
-Os `changes` de concessões incluem um rótulo além do id (ex:
-`{"group": {"id": 3, "label": "Financeiro"}}`). A coluna lida vem de
-`config('authz.audit.label_columns.{tabela}')` — troque `name`/`permission`
-por outro nome se o projeto usar outra convenção (`nome`, `label`...).
+| Onde | Como |
+| --- | --- |
+| **Rota** | `Route::get(...)->middleware('authz.permission:financeiro.ver')` |
+| **Controller** | `Gate::authorize('financeiro.aprovar');` (erro 403 se não tiver) |
+| **Blade** | `@can('financeiro.aprovar') ... @endcan` ou `@hasPermission('financeiro.aprovar') ... @endHasPermission` |
+| **Model / Service** | `$user->hasPermission('financeiro.aprovar')` |
+| **Policy** | `return $user->hasPermission('financeiro.editar') && $fatura->user_id === $user->id;` |
+| **Qualquer lugar** | `Authz::hasPermission('financeiro.aprovar')` (usuário logado) |
 
-## Gates, Middleware e Blade
-
-Com `config('authz.gates.auto_register')` ligado (padrão), o
-ServiceProvider registra um `Gate::define()` por permissão do catálogo,
-uma vez no boot da aplicação:
+### Middleware de rota
 
 ```php
-Gate::allows('financeiro.aprovar'); // true/false, mesma lógica de hasPermission()
+// Precisa desta permissão
+Route::get('/pagamentos', ...)->middleware('authz.permission:financeiro.ver');
+
+// Precisa de UMA delas (separe com |)
+Route::get('/relatorios', ...)->middleware('authz.permission:financeiro.ver|rh.ver');
+
+// Precisa de TODAS (separe com vírgula)
+Route::post('/pagamentos/aprovar', ...)->middleware('authz.permission:financeiro.ver,financeiro.aprovar');
+
+// Por grupo, com a mesma sintaxe
+Route::get('/diretoria', ...)->middleware('authz.role:Diretoria');
 ```
 
-Middleware, para proteger rotas por permissão:
+Visitante não logado vai para a tela de login; usuário logado sem permissão
+recebe erro 403.
 
-```php
-Route::post('/aprovar', ...)->middleware('authz.permission:financeiro.aprovar');
-```
-
-Blade directives:
+### Blade
 
 ```blade
 @hasPermission('financeiro.aprovar')
     <button>Aprovar</button>
 @endHasPermission
 
-@hasAnyPermission(['financeiro.ver', 'financeiro.aprovar'])
-    ...
-@endHasAnyPermission
-
-@hasRole('financeiro')
-    ...
-@endHasRole
+@hasAnyPermission(['financeiro.ver', 'rh.ver'])   ... @endHasAnyPermission
+@hasAllPermissions(['financeiro.ver', 'rh.ver'])  ... @endHasAllPermissions
+@hasRole('Financeiro')                            ... @endHasRole
+@hasAnyRole(['Financeiro', 'Diretoria'])          ... @endHasAnyRole
 ```
 
-Helpers globais equivalentes, para uso fora de views
-(`hasPermission()`, `hasAnyPermission()`, `hasAllPermissions()`,
-`hasRole()`, `hasAnyRole()`, `hasAllRoles()`, `getUserGroups()`,
-`getUserPermissions()`) — todos aceitam `$userId` opcional, com
-`Auth::id()` como padrão.
+As diretivas nativas `@can` / `@cannot` também funcionam.
 
-## Filtrar listagens por permissão (whereHasPermission)
+### Gate e `@can`
 
-Para telas de listagem que precisam filtrar usuários por permissão sem
-N+1 (uma query por usuário candidato), a macro `whereHasPermission`
-replica a mesma cascata de precedência de `hasPermission()` via
-`whereExists`/`whereNotExists`:
+O pacote se liga ao Gate do Laravel automaticamente. Suas **Policies e
+`Gate::define()` sempre têm prioridade** — o pacote só responde quando nenhuma
+regra do seu projeto respondeu. Isso também significa que um "super admin"
+via `Gate::before` continua funcionando:
 
 ```php
-User::whereHasPermission('financeiro.aprovar')->get();
-
-// Se a coluna de id do usuário não se chamar 'id' na tabela consultada:
-User::whereHasPermission('financeiro.aprovar', 'usuario_id')->get();
+// AppServiceProvider::boot()
+Gate::before(fn ($user) => $user->hasRole('Admin') ? true : null);
 ```
 
-## Sincronizar o catálogo de permissões via config
+## 5. Como a decisão é tomada
 
-Para projetos que preferem declarar permissões no código em vez de
-gerenciá-las manualmente via banco:
+Um usuário recebe permissões de dois lugares: **dos grupos dele** e de
+**exceções individuais** (regras só para ele). Quando as regras se
+contradizem, vence a primeira linha desta tabela que se aplicar:
+
+| # | Situação | Resultado |
+| --- | --- | --- |
+| 1 | Exceção individual **negando** | ❌ Negado — nada reverte isso |
+| 2 | Exceção individual **concedendo** | ✅ Concedido |
+| 3 | Algum grupo **nega de forma absoluta** | ❌ Negado |
+| 4 | Algum grupo **concede** | ✅ Concedido |
+| 5 | Só há negações comuns de grupo | ❌ Negado |
+| 6 | Nenhuma regra | ❌ Negado |
+
+**Na prática:** se ninguém disse nada sobre o usuário, os grupos decidem. Se
+nenhum grupo disser nada, a resposta é "não".
+
+**Negação comum x absoluta.** Uma negação comum de grupo perde para a
+concessão de outro grupo. Uma negação **absoluta** vence qualquer grupo — use
+para regras de compliance ("estagiário nunca aprova pagamento, mesmo que
+esteja em outro grupo que aprova"):
 
 ```php
-// config/authz.php
+Authz::grantPermissionToGroup($estagiarios, $aprovarId, [
+    'is_granted' => false,  // nega
+    'is_absolute' => true,  // e vence os outros grupos
+]);
+```
+
+**Só contam regras vigentes.** Uma regra é ignorada se estiver apagada, se a
+`start_date` ainda não chegou, se a `end_date` já passou, se o grupo ou a
+membresia estiver com `status = 0`, ou se a permissão estiver desativada.
+
+```php
+// Acesso temporário: só até o fim do ano
+$user->assignRole('Auditoria', ['end_date' => '2026-12-31']);
+
+// Acesso que começa no futuro
+$user->grantPermission('financeiro.aprovar', ['start_date' => '2026-10-01']);
+```
+
+## 6. Referência rápida
+
+Permissões e grupos podem ser passados **pelo nome** (`'financeiro.aprovar'`,
+`'Financeiro'`) **ou pelo id** (`7`). Nomes de permissão não diferenciam
+maiúsculas de minúsculas.
+
+### No model User (trait `HasAuthz`)
+
+| Método | O que faz |
+| --- | --- |
+| `hasPermission($p)` | Tem a permissão? |
+| `hasAnyPermission([...])` / `hasAllPermissions([...])` | Tem alguma / todas? |
+| `getPermissionNames()` / `getPermissionIds()` | Lista das permissões efetivas |
+| `grantPermission($p, $opcoes = [])` | Dá a permissão só para este usuário |
+| `denyPermission($p, $opcoes = [])` | Nega a permissão só para este usuário (vence os grupos) |
+| `revokePermission($p)` | Retira o que foi dado com `grantPermission` |
+| `clearPermissionOverride($p)` | Retira qualquer regra individual (concessão ou negação) |
+| `syncPermissions([...])` | Deixa as concessões individuais iguais à lista |
+| `hasRole($g)` / `hasAnyRole([...])` / `hasAllRoles([...])` | Está no grupo? |
+| `assignRole($g, $opcoes = [])` / `assignRoles([...])` | Coloca no grupo (não duplica) |
+| `removeRole($g)` | Tira do grupo |
+| `syncRoles([...])` | Deixa o usuário exatamente nos grupos da lista |
+| `getRoleNames()` / `getRoleIds()` / `getGroups()` | Grupos atuais |
+| `setPrimaryRole($g)` / `getPrimaryRole()` | Grupo principal |
+| `User::getUsersWithRole($g)` | Todos os usuários de um grupo |
+| `User::whereHasPermission($p)` | Query de usuários com a permissão (sem N+1) |
+
+> Prefere separar? `HasRoles` e `HasPermissions` também existem e podem ser
+> usados juntos. `HasAuthz` é só os dois combinados.
+
+### No Facade `Authz` (gerenciar dados)
+
+| Assunto | Métodos |
+| --- | --- |
+| Grupos | `createGroup($nome, $descricao = null)`, `updateGroup($id, [...])`, `deleteGroup($id)`, `restoreGroup($id)` |
+| Membros | `addUserToGroup($userId, $groupId, [...])`, `updateGroupMembership($id, [...])`, `removeUserFromGroup($id)` |
+| Permissões | `createPermission($nome, $modulo, $acao, $rotulo)`, `updatePermission($id, [...])`, `deletePermission($id)`, `restorePermission($id)` |
+| Regras de grupo | `grantPermissionToGroup($groupId, $permId, [...])`, `updateGroupPermission($id, [...])`, `revokeGroupPermission($id)` |
+| Regras individuais | `grantPermissionToUser($userId, $permId, [...])`, `updateUserPermission($id, [...])`, `revokeUserPermission($id)` |
+| Consultas | `hasPermission`, `hasRole`, `getEffectivePermissions`, `getUserGroups`, `getAssignablePermissions` |
+| Nome → id | `resolvePermissionId('financeiro.aprovar')`, `resolveGroupId('Financeiro')` |
+| Cache | `forgetUserCache($userId)`, `flushCache()` |
+
+Comportamentos importantes:
+
+- **`delete*` fazem soft delete** (dá para recuperar com `restore*`). Passe
+  `purge: true` para apagar de vez: `Authz::deleteGroup($id, purge: true)`.
+- **`grant*` e `addUserToGroup` não duplicam.** Se a regra ou membresia já
+  existir, ela é atualizada com as opções informadas.
+- **`update*` só aceitam campos conhecidos.** Um campo inválido gera um erro
+  que lista os campos aceitos. Retornam `false` quando nada mudou.
+- **Erros de uso** (id inexistente, nome duplicado, campo inválido) lançam
+  `Gsebastiao\LaravelAuthz\Exceptions\AuthzException` com uma mensagem que
+  explica o que fazer.
+- Toda escrita roda dentro de uma transação e dispara um evento do Laravel
+  (`GroupCreated`, `UserAddedToGroup`, `PermissionGrantedToGroup`... — veja
+  `src/Events`).
+
+### Opções aceitas
+
+| Onde | Campos |
+| --- | --- |
+| Grupo | `name`, `description`, `status` |
+| Membresia (`assignRole`, `addUserToGroup`) | `status`, `start_date`, `end_date`, `is_primary`, `observacao` |
+| Permissão | `permission`, `module`, `action`, `label`, `description`, `order`, `status`, `tenant_id` |
+| Regra de grupo | `is_granted`, `is_absolute`, `start_date`, `end_date` |
+| Regra individual | `is_granted`, `start_date`, `end_date` |
+
+### Funções globais
+
+Também existem atalhos globais, úteis em qualquer lugar: `authz()`,
+`hasPermission()`, `hasAnyPermission()`, `hasAllPermissions()`, `hasRole()`,
+`hasAnyRole()`, `hasAllRoles()`, `getUserGroups()`, `getUserPermissions()`.
+Sem `$userId`, usam o usuário logado.
+
+## 7. Recursos opcionais
+
+Nada desta seção é necessário para usar o pacote.
+
+### Catálogo completo no config
+
+Além da forma curta, cada permissão aceita mais detalhes:
+
+```php
 'permissions' => [
+    'financeiro.ver',
     [
         'permission' => 'financeiro.aprovar',
-        'module' => 'financeiro',
-        'action' => 'aprovar',
-        'label' => 'Aprovar solicitação financeira',
+        'label' => 'Aprovar pagamentos',
+        'description' => 'Permite aprovar pagamentos acima de 10 mil',
+        'order' => 10,
     ],
-    // ...
 ],
 ```
 
-```bash
-php artisan authz:sync-permissions
-```
+Para montar uma tela de "gerenciar permissões", use
+`Authz::getAssignablePermissions()`.
 
-Cria o que falta, atualiza os campos que mudaram no que já existe, e
-nunca deleta automaticamente — permissões que saíram do config mas ainda
-existem no banco são listadas como aviso, para revisão manual.
+### Cache
 
-## Cache
+Por padrão cada checagem consulta o banco. Em produção, ligue o cache no `.env`:
 
-Desligado por padrão. Ligue quando o volume de acessos simultâneos tornar
-"consultar o banco a cada checagem de permissão" um gargalo real — não
-antes disso.
-
-```bash
-# .env
+```env
 AUTHZ_CACHE_ENABLED=true
 ```
 
-```php
-// config/authz.php — todos os parâmetros, com o default de cada um
-'cache' => [
-    'enabled' => env('AUTHZ_CACHE_ENABLED', false),
-    'store' => env('AUTHZ_CACHE_STORE', null),               // null = driver padrão da aplicação
-    'ttl' => env('AUTHZ_CACHE_TTL', 3600),                    // segundos
-    'prefix' => env('AUTHZ_CACHE_PREFIX', 'authz'),
-    'invalidate_on_write' => env('AUTHZ_CACHE_INVALIDATE_ON_WRITE', true),
-],
+Tudo o que é feito pelos métodos do pacote atualiza o cache sozinho. Se você
+alterar as tabelas **direto no banco** (SQL, seeder com `DB::table`), rode:
+
+```bash
+php artisan authz:cache-reset
 ```
 
-`getUserGroups()` e `getEffectivePermissions()` são os dois métodos
-cacheados — os realmente quentes em produção (`hasPermission()` chama
-`getEffectivePermissions()` a cada checagem, então herda o cache
-automaticamente). Os três formatos de `getEffectivePermissions()`
-compartilham uma única entrada de cache por usuário/tenant — pedir `Id`
-numa chamada e `Permission` na próxima não gera duas consultas.
+Outras opções (`AUTHZ_CACHE_STORE`, `AUTHZ_CACHE_TTL`...) estão comentadas em
+`config/authz.php`. Validades por data são reavaliadas quando o TTL expira
+(padrão: 1 hora).
 
-`store: null` usa o driver de cache padrão do projeto
-(`config('cache.default')`) — o pacote nunca fala com Redis, Memcached ou
-qualquer driver diretamente, sempre através do `Cache` facade do Laravel,
-que sabe conversar com qualquer um deles. Funciona com `file` (padrão do
-Laravel), `database`, `redis`, `memcached`, `array`, `dynamodb` — qualquer
-store que o projeto já tenha configurado em `config/cache.php`. Para usar um
-store diferente do padrão só para este pacote, aponte `'store' => 'redis'`.
+### Multi-tenant (empresas, filiais, sedes...)
 
-### Invalidação automática
-
-As funções de CRUD invalidam o cache certo sozinhas — não precisa chamar
-nada manualmente no caminho comum:
-
-| Ação | Invalida |
-| --- | --- |
-| `addUserToGroup`, `removeUserFromGroup`, `updateGroupMembership` | o usuário específico |
-| `grantPermissionToUser`, `updateUserPermission`, `revokeUserPermission` | o usuário específico |
-| `grantPermissionToGroup`, `updateGroupPermission`, `revokeGroupPermission` | todo membro atual do grupo |
-| `updateGroup`, `deleteGroup` | todo membro atual do grupo |
-
-**Exceção deliberada:** `updatePermission()`/`deletePermission()` (editar o
-catálogo em si) **não invalidam automaticamente**. Descobrir precisamente
-quem tem aquela permissão concedida — por qualquer grupo, de qualquer
-tenant, ou por exceção individual — exigiria cruzar 3 tabelas para uma ação
-de admin rara. Se isso importar para o seu caso, chame manualmente:
+Use só se o sistema for dividido em partes que não podem ver os grupos umas
+das outras. Crie uma classe que diga qual é o tenant atual:
 
 ```php
-Authorization::forgetUserCache($userId);
-```
+namespace App\Support;
 
-`invalidate_on_write: false` desliga a invalidação automática das funções
-de CRUD (troca correção imediata por menos trabalho a cada escrita — a
-leitura volta a ficar correta quando o TTL expirar). `forgetUserCache()`
-continua funcionando manualmente mesmo com isto desligado.
-
-## Escopo de tenant (Sede, Delegação, Departamento, Agência...)
-
-O pacote não sabe, e não precisa saber, que nome de negócio o seu
-particionamento tem. Ele só entende `TenantContext::id()`: um id, ou `null`
-para "sem particionamento".
-
-Padrão de fábrica: `NullTenantContext`, sempre `null` — nenhum filtro é
-aplicado em lugar nenhum, comportamento idêntico a um projeto sem tenant.
-
-Para ativar, implemente o contrato:
-
-```php
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 
-class TenantFromUser implements TenantContext
+class TenantAtual implements TenantContext
 {
     public function id(): int|string|null
     {
-        return auth()->user()?->tenant_id; // ou sessão, subdomínio, header, claim de token...
+        return auth()->user()?->empresa_id; // ou sessão, subdomínio...
     }
 }
 ```
@@ -453,118 +375,89 @@ class TenantFromUser implements TenantContext
 E aponte para ela em `config/authz.php`:
 
 ```php
-'tenant_context' => \App\Support\TenantFromUser::class,
+'tenant_context' => \App\Support\TenantAtual::class,
 ```
 
-A partir daí, toda vez que o pacote precisar saber "qual é o tenant agora",
-ele pede a interface — e o Laravel entrega a sua classe, por causa do bind
-já feito no service provider do pacote. Trocar de volta pro padrão é
-remover essa linha do config, nada no resto do código muda.
+O que muda:
 
-**O que fica escopado:** `auth_groups` (grupos/papéis) — um grupo
-"Financeiro" pode existir uma vez por tenant, com permissões diferentes em
-cada um. O escopo chega às tabelas de vínculo de forma transitiva, via
-`group_id`.
+- **Grupos** passam a pertencer a um tenant. Pode existir um "Financeiro" em
+  cada empresa, cada um com suas permissões. `createGroup()` usa o tenant atual.
+- **Permissões** continuam globais, a não ser que você crie uma exclusiva:
+  `Authz::createPermission('exportar.massa', 'relatorios', 'exportar', 'Exportar', tenantId: 3)`.
+  Permissões exclusivas ficam invisíveis e sem efeito nos outros tenants, e
+  não podem ser dadas a grupos de outro tenant.
+- Nomes de grupo (`assignRole('Financeiro')`) são procurados só no tenant atual.
 
-**O que fica global por padrão, mas pode ser exclusivo de um tenant:**
-`auth_permissions`. Preencha `tenant_id` numa permissão pra torná-la
-exclusiva:
+> Atenção: o id do tenant nunca pode ser `0` nem string vazia.
+>
+> Os métodos de gerenciamento não verificam se o id que você passou pertence
+> ao tenant atual. Numa tela de administração por tenant, valide isso no seu
+> controller antes de chamar `updateGroup`, `deleteGroup` etc.
+
+### Auditoria
+
+Com o pacote `gsebastiao/laravel-auditable` instalado e
+`AUTHZ_AUDIT_ENABLED=true`, toda alteração feita pelo pacote é auditada.
 
 ```php
-$auth->createPermission('exportar.massa', 'relatorios', 'exportar', 'Exportar em massa', tenantId: $tenantId);
+Authz::getAuditTrail('groups', $groupId); // histórico de um grupo
+
+// "Criado por / em" numa listagem, sem N+1:
+Authz::applyAuditJoins('groups', DB::table('auth_groups'))->get();
 ```
 
-Isso importa especialmente porque, se cada tenant tem sua própria tela de
-gerenciar grupos/permissões (autoatendimento, não centralizado por você),
-uma permissão exclusiva precisa ficar **invisível** para outros tenants, não
-só inacessível — senão o gestor de outro tenant vê a opção no seletor e
-consegue concedê-la a si mesmo. Duas proteções cobrem isso:
+Sem o pacote de auditoria, tudo funciona normalmente, apenas sem registrar.
 
-- `getAssignablePermissions()` — o que a tela de gerenciar grupos de cada
-  tenant deve consultar para montar o seletor — só retorna permissões
-  globais mais as exclusivas do tenant ativo.
-- `getEffectivePermissions()`/`hasPermission()` ignoram qualquer concessão
-  de grupo cuja permissão não seja visível ao tenant ativo, mesmo que a
-  concessão exista no banco — defesa em profundidade para o caso de um
-  grant indevido ter sido criado por bug ou edição direta.
-- `grantPermissionToGroup()` valida a mesma regra **antes** de gravar,
-  impedindo a linha ruim de existir, não só ignorando-a depois.
+### Nomes de tabela diferentes
 
-`permission` continua globalmente único mesmo com `tenant_id` preenchido —
-dois tenants não conseguem reivindicar a mesma string, mesmo para
-permissões exclusivas.
+Edite `tables` em `config/authz.php` **antes** de rodar o `migrate`. Mudar
+depois não renomeia tabelas já criadas.
 
-**Atenção:** o id do tenant precisa ser um valor truthy (nunca `0`).
+## 8. Problemas comuns
 
-**Detalhe de schema:** `auth_groups` tem uma coluna **gerada pelo banco**
-`tenant_key` (`COALESCE(tenant_id, 0)`, nunca escrita pela aplicação),
-usada só pela constraint `unique(['tenant_key', 'name'])`. Isso existe
-porque `NULL` não é igual a `NULL` em `UNIQUE` na maioria dos bancos
-(SQLite, PostgreSQL, SQL Server — MySQL é exceção) — com `tenant_id`
-sempre `null` no modo padrão, `unique(['tenant_id', 'name'])` direto não
-impediria nomes de grupo duplicados. Por ser calculada pelo próprio
-banco, fica correta mesmo para linhas inseridas fora de
-`createGroup()`/`updateGroup()` (fixtures de teste, scripts de migração
-de dados) — nunca defina `tenant_key` manualmente.
+**`Grupo 'X' não encontrado`** — use o nome exatamente como foi cadastrado
+(incluindo maiúsculas). Com multi-tenant, o grupo precisa ser do tenant atual.
 
-## O que este pacote deliberadamente não faz
+**`Permissão 'x' não encontrada`** — rode `php artisan authz:sync-permissions`
+depois de declarar a permissão no config.
 
-- Menus, navegação ou árvore de UI — fica em um pacote separado, que
-  consome os ids retornados por `getEffectivePermissions()`.
-- Hierarquia de escopo (Sede contém Departamento, com herança de permissão
-  descendo a árvore).
-- Múltiplos eixos simultâneos de tenant (Sede E Departamento ao mesmo
-  tempo, com regra de precedência entre os dois).
-- Models de domínio `Sede`/`Delegação`/`Departamento`/`Agência` — isso é
-  modelagem do projeto host; o pacote termina no `tenant_id` genérico.
-- Laravel Policies — Policies são tipicamente por Model de domínio do
-  projeto host (`PostPolicy`, `InvoicePolicy`...), não deste pacote. Use
-  os Gates auto-registrados (`Gate::allows('financeiro.aprovar')`) ou
-  `hasPermission()` dentro da própria Policy do seu projeto, quando
-  precisar combinar a checagem de permissão com regras específicas do
-  domínio (ex: "só pode editar a própria fatura E ter
-  `financeiro.editar`").
+**Dei a permissão mas `hasPermission` continua `false`.** Verifique, nesta ordem:
+1. O usuário tem uma **negação individual**? (`denyPermission` vence tudo)
+2. Algum grupo dele tem **negação absoluta** para essa permissão?
+3. A regra, o grupo ou a membresia está com `status = 0`, `start_date` no
+   futuro ou `end_date` no passado?
+4. A permissão está desativada ou é exclusiva de outro tenant?
+5. Cache ligado e você alterou o banco direto? Rode `php artisan authz:cache-reset`.
 
-Se um caso real precisar de algo disso, desenhe para aquele caso concreto —
-mais barato e mais certeiro do que generalizar sem um caso para guiar o
-design.
+**`@can('financeiro.aprovar')` retorna `false` mesmo com a permissão.** Veja
+se o seu projeto tem um `Gate::define('financeiro.aprovar', ...)` ou uma
+Policy respondendo antes — eles têm prioridade. Confirme também que
+`gates.auto_register` está `true` em `config/authz.php`.
 
-## Perguntas frequentes
+**`Já existe um grupo apagado com o nome...`** — nomes são únicos mesmo depois
+do soft delete. Use `Authz::restoreGroup($id)` (ou `restorePermission`) como a
+mensagem indica.
 
-**Meu catálogo de permissões é global — não posso ter uma funcionalidade
-exclusiva de um tenant?** Pode. "Global" é sobre o catálogo (quais strings
-o código conhece), não sobre quem pode *usar* cada uma — isso é decidido
-pela concessão, que já é tenant-scoped via grupo. Se precisar que a
-permissão fique **invisível** para outros tenants (não só inacessível),
-[ver acima](#escopo-de-tenant-sede-delegação-departamento-agência).
+**Rodei `vendor:publish` duas vezes.** Sem problema: migrations já publicadas
+não são duplicadas.
 
-**`TenantContext` só serve para "Sede"?** Não — o nome vem só de um
-exemplo. O contrato entende um id genérico; o que ele representa
-(Delegação, Escola, Filial, Empresa) é decisão do projeto host, não do
-pacote.
+## 9. Atualizando da versão 2.x
 
-**Por que `TenantContext` é uma interface e não um valor de config?**
-Porque "qual é o tenant agora" é lógica (vem de sessão, subdomínio, coluna
-no usuário — varia por projeto), não um dado fixo. Uma string de config não
-executa código; uma classe sim.
+A 2.x não conseguia ser instalada numa aplicação nova (o `migrate` falhava e as
+migrations não eram publicadas corretamente). Se você contornou isso
+manualmente e já tem as tabelas:
 
-**Meu sistema tem vários níveis (Departamento dentro de Delegação, Filial
-dentro de Sede) — como uso isso?** Pergunte: em qual desses níveis um
-GRUPO precisa ter identidade própria (papéis diferentes por nível)? Na
-maioria dos casos, é só um nível — os outros são classificação de dado, não
-precisam passar por `TenantContext`. Aponte `TenantContext.id()` para esse
-nível único. Se genuinamente precisar de herança entre dois níveis, isso é
-uma extensão maior que o pacote não cobre hoje — ver seção acima.
+1. **Não** publique as migrations de novo — as tabelas não mudaram.
+2. Se usava `HasRoles` e `HasPermissions` juntos, agora funciona; ou troque os
+   dois por `HasAuthz`.
+3. Revise o [CHANGELOG](CHANGELOG.md) — algumas regras passaram a ser
+   aplicadas como sempre foram documentadas (grupo inativo e `start_date`
+   futura deixam de conceder, por exemplo).
+4. Opcional: nas instalações novas, apagar um usuário apaga as membresias dele
+   em cascata. Se quiser o mesmo numa instalação antiga, troque a foreign key
+   `auth_groups_users.user_id` para `ON DELETE CASCADE` numa migration sua.
 
-**Preciso ligar cache pra este pacote funcionar?** Não. Desligado por
-padrão, e a maioria dos projetos nunca vai precisar ligar.
-
-**Editei uma permissão do catálogo com cache ligado — os usuários que a
-têm ficam com dado desatualizado?** Só até o TTL expirar —
-`updatePermission()`/`deletePermission()` não invalidam automaticamente
-(ver [seção de cache](#invalidação-automática)). Chame
-`Authorization::forgetUserCache($userId)` se precisar de correção
-imediata.
+---
 
 ## Testes
 
@@ -572,27 +465,9 @@ imediata.
 composer test
 ```
 
-Cobrem as 6 branches da cascata de prioridade, os três formatos de
-`getEffectivePermissions()`, comportamento idêntico ao single-tenant sem
-`TenantContext` customizado, isolamento real entre tenants, permissões
-exclusivas de tenant (seletor filtrado e defesa em leitura e escrita), nomes
-de tabela customizados fim a fim, CRUD auditado (diff correto, caminho de
-falha, agrupamento por transação), `applyAuditJoins()`, e cache (servindo do
-cache de verdade, invalidação por usuário e por grupo, isolamento por
-tenant, toggle `invalidate_on_write`, formatos compartilhando uma entrada).
-
-Além da suíte PHPUnit, o comportamento também foi validado por execução
-real (SQLite in-memory) durante o desenvolvimento — incluindo os cenários
-mais delicados de precedência de `whereHasPermission()` contra
-`hasPermission()` como baseline, rollback real de transação forçando
-violação de chave, e os dois cenários de integração com
-`gsebastiao/laravel-auditable` (instalado e não instalado).
-
-## Versionamento
-
-Este pacote está em `0.1.x`: a API pode mudar sem aviso até ser validada em
-pelo menos um projeto real além do de origem. Depois disso, semver 1.0
-convencional.
+A suíte (85 testes) roda com SQLite em memória e cobre a cascata de decisão,
+datas de validade, tenant, cache, auditoria, os traits do model, Gate,
+middlewares, Blade e os comandos artisan. Validada em Laravel 11, 12 e 13.
 
 ## Licença
 

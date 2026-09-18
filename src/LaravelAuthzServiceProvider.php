@@ -2,9 +2,12 @@
 
 namespace Gsebastiao\LaravelAuthz;
 
+use Gsebastiao\LaravelAuthz\Console\Commands\CacheResetCommand;
+use Gsebastiao\LaravelAuthz\Console\Commands\InstallCommand;
 use Gsebastiao\LaravelAuthz\Console\Commands\SyncPermissionsCommand;
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 use Gsebastiao\LaravelAuthz\Http\Middleware\PermissionMiddleware;
+use Gsebastiao\LaravelAuthz\Http\Middleware\RoleMiddleware;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Support\NullTenantContext;
 use Illuminate\Database\Eloquent\Builder;
@@ -13,128 +16,96 @@ use Illuminate\Support\ServiceProvider;
 
 class LaravelAuthzServiceProvider extends ServiceProvider
 {
+    /** Migrations publicadas, na ordem em que precisam rodar. */
+    public const MIGRATIONS = [
+        'create_authz_groups_tables',
+        'create_authz_permissions_tables',
+    ];
+
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/authz.php', 'authz');
 
-        // Único lugar do pacote que decide qual implementação concreta
-        // de TenantContext está ativa. Authorization::activeTenantId()
-        // só resolve a interface — nunca lê config diretamente.
         $this->app->bind(TenantContext::class, function ($app) {
-            $concrete = config('authz.tenant_context', NullTenantContext::class);
-
-            return $app->make($concrete);
+            return $app->make(config('authz.tenant_context') ?: NullTenantContext::class);
         });
 
-        // Bind do Authorization como singleton
-        $this->app->singleton(Authorization::class, function ($app) {
-            return new Authorization();
-        });
-
-        // Alias para facilitar o uso (também usado por helpers.php via authz())
+        $this->app->singleton(Authorization::class);
         $this->app->alias(Authorization::class, 'authz');
     }
 
     public function boot(): void
     {
-        // Nota: helpers.php e AuditableModelSupport.php já são carregados
-        // via composer.json > autoload > files, antes de qualquer classe
-        // do pacote — não é preciso (nem correto) fazer require aqui.
-
         $this->registerBladeDirectives();
-        $this->registerMiddlewareAlias();
-        $this->registerEloquentMacro();
-        $this->registerGatesIfEnabled();
+        $this->registerMiddlewareAliases();
 
-        $this->commands([
-            SyncPermissionsCommand::class,
-        ]);
+        Builder::macro('whereHasPermission', function (string $permission, string $userIdColumn = 'id') {
+            /** @var Builder $this */
+            return app(Authorization::class)->applyWhereHasPermission($this, $permission, $userIdColumn);
+        });
 
-        // Fora do runningInConsole() de propósito: precisa estar
-        // disponível também quando o Testbench roda migrations durante
-        // os testes, não só via artisan em CLI.
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+        // Liga as permissões ao Gate do Laravel (@can, Gate::allows...).
+        // Não consulta o banco aqui — só quando uma checagem acontece.
+        if (config('authz.gates.auto_register', true)) {
+            $this->app->make(Authorization::class)->registerGates();
+        }
 
         if ($this->app->runningInConsole()) {
+            $this->commands([
+                InstallCommand::class,
+                SyncPermissionsCommand::class,
+                CacheResetCommand::class,
+            ]);
+
             $this->publishes([
                 __DIR__ . '/../config/authz.php' => config_path('authz.php'),
             ], 'authz-config');
 
-            $this->publishesMigrations([
-                __DIR__ . '/../database/migrations' => database_path('migrations'),
-            ], 'authz-migrations');
+            $this->publishesMigrations($this->migrationsToPublish(), 'authz-migrations');
         }
     }
 
     /**
-     * Registra as Blade directives do pacote: @hasPermission,
-     * @hasAnyPermission, @hasRole e os @end* correspondentes.
+     * Mapeia cada .php.stub para um arquivo .php com timestamp. Se a
+     * migration já tiver sido publicada antes, reaproveita o mesmo arquivo
+     * (assim publicar de novo não cria migrations duplicadas).
+     */
+    protected function migrationsToPublish(): array
+    {
+        $paths = [];
+
+        foreach (self::MIGRATIONS as $index => $name) {
+            $existing = glob(database_path("migrations/*_{$name}.php")) ?: [];
+
+            $paths[__DIR__ . "/../database/migrations/{$name}.php.stub"] = $existing[0]
+                ?? database_path(sprintf('migrations/2026_01_01_%06d_%s.php', $index + 1, $name));
+        }
+
+        return $paths;
+    }
+
+    /**
+     * @hasPermission / @hasAnyPermission / @hasAllPermissions
+     * @hasRole / @hasAnyRole — cada um com o @end... correspondente.
      */
     protected function registerBladeDirectives(): void
     {
-        Blade::directive('hasPermission', function ($expression) {
-            return "<?php if (hasPermission({$expression})): ?>";
-        });
+        $service = '\\' . Authorization::class;
 
-        Blade::directive('endHasPermission', function () {
-            return '<?php endif; ?>';
-        });
-
-        Blade::directive('hasAnyPermission', function ($expression) {
-            return "<?php if (hasAnyPermission({$expression})): ?>";
-        });
-
-        Blade::directive('endHasAnyPermission', function () {
-            return '<?php endif; ?>';
-        });
-
-        Blade::directive('hasRole', function ($expression) {
-            return "<?php if (hasRole({$expression})): ?>";
-        });
-
-        Blade::directive('endHasRole', function () {
-            return '<?php endif; ?>';
-        });
-    }
-
-    /**
-     * Registra o alias de middleware 'authz.permission' ->
-     * PermissionMiddleware, para uso como `->middleware('authz.permission:financeiro.aprovar')`.
-     */
-    protected function registerMiddlewareAlias(): void
-    {
-        /** @var \Illuminate\Routing\Router $router */
-        $router = $this->app['router'];
-
-        $router->aliasMiddleware('authz.permission', PermissionMiddleware::class);
-    }
-
-    /**
-     * Registra a macro Builder::macro('whereHasPermission', ...),
-     * delegando para Authorization::applyWhereHasPermission() — filtro
-     * de listagem sem N+1, mesma cascata de precedência de
-     * hasPermission().
-     */
-    protected function registerEloquentMacro(): void
-    {
-        Builder::macro('whereHasPermission', function (string $permission, string $userIdColumn = 'id') {
-            /** @var \Illuminate\Database\Eloquent\Builder $this */
-            return app(Authorization::class)->applyWhereHasPermission($this, $permission, $userIdColumn);
-        });
-    }
-
-    /**
-     * Registra um Gate::define() por permissão do catálogo, condicional
-     * a config('authz.gates.auto_register').
-     */
-    protected function registerGatesIfEnabled(): void
-    {
-        if (!config('authz.gates.auto_register', true)) {
-            return;
+        foreach (['hasPermission', 'hasAnyPermission', 'hasAllPermissions', 'hasRole', 'hasAnyRole'] as $method) {
+            Blade::directive($method, fn($expression) => "<?php if (app({$service}::class)->{$method}({$expression})): ?>");
+            Blade::directive('end' . ucfirst($method), fn() => '<?php endif; ?>');
         }
+    }
 
-        $this->app->booted(function () {
-            app(Authorization::class)->registerGates();
-        });
+    /**
+     * Route::middleware('authz.permission:financeiro.aprovar')
+     * Route::middleware('authz.role:financeiro')
+     */
+    protected function registerMiddlewareAliases(): void
+    {
+        $router = $this->app['router'];
+        $router->aliasMiddleware('authz.permission', PermissionMiddleware::class);
+        $router->aliasMiddleware('authz.role', RoleMiddleware::class);
     }
 }

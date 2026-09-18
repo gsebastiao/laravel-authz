@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
@@ -37,7 +38,7 @@ class TenantScopeTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function com_null_tenant_context_padrao_ve_todos_os_grupos_do_usuario(): void
     {
         // Nenhum bind customizado nesta suite -> usa NullTenantContext,
@@ -51,7 +52,7 @@ class TenantScopeTest extends TestCase
         $this->assertCount(1, (new Authorization())->getUserGroups($userId));
     }
 
-    /** @test */
+    #[Test]
     public function com_tenant_context_ativo_grupo_de_outro_tenant_fica_invisivel(): void
     {
         $userId = $this->user();

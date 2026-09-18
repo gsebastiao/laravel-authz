@@ -1,0 +1,56 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Não incluir no dist (pacote instalado via composer) o que só serve ao desenvolvimento
+/tests export-ignore
+/.github export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.gitlab-ci.yml export-ignore
+/phpunit.xml export-ignore
+/phpunit.xml.dist export-ignore
+/.editorconfig export-ignore
+/docker-compose.yml export-ignore
+/docker-compose.yaml export-ignore
+/Dockerfile export-ignore
+
+# Ferramentas de qualidade de código - não usadas em produção
+/phpstan.neon export-ignore
+/phpstan.neon.dist export-ignore
+/psalm.xml export-ignore
+/psalm.xml.dist export-ignore
+/.php-cs-fixer.php export-ignore
+/.php-cs-fixer.dist.php export-ignore
+
+# Documentação interna do repositório - não faz parte do pacote instalado
+/CHANGELOG.md export-ignore
+/CONTRIBUTING.md export-ignore
+
+# Arquivos específicos - forçar LF
+*.php text eol=lf
+*.md text eol=lf diff=markdown
+*.json text eol=lf
+*.xml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.stub text eol=lf
+*.txt text eol=lf
+
+# Binários
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.zip binary
+*.tar.gz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary

@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Enums\PermissionFormat;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
@@ -39,7 +40,7 @@ class PermissionFormatTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function sem_format_explicito_retorna_id_e_permission_juntos(): void
     {
         $userId = $this->user();
@@ -51,7 +52,7 @@ class PermissionFormatTest extends TestCase
         $this->assertSame([['id' => $permId, 'permission' => 'financeiro.aprovar']], $result);
     }
 
-    /** @test */
+    #[Test]
     public function format_id_retorna_so_os_ids(): void
     {
         $userId = $this->user();
@@ -63,7 +64,7 @@ class PermissionFormatTest extends TestCase
         $this->assertSame([$permId], $result);
     }
 
-    /** @test */
+    #[Test]
     public function format_permission_retorna_so_as_strings(): void
     {
         $userId = $this->user();
@@ -75,7 +76,7 @@ class PermissionFormatTest extends TestCase
         $this->assertSame(['financeiro.aprovar'], $result);
     }
 
-    /** @test */
+    #[Test]
     public function has_permission_continua_funcionando_por_nome(): void
     {
         $userId = $this->user();
@@ -86,7 +87,7 @@ class PermissionFormatTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('financeiro.rejeitar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function has_permission_aceita_id_como_int(): void
     {
         $userId = $this->user();
@@ -97,7 +98,7 @@ class PermissionFormatTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission($permId + 999, $userId));
     }
 
-    /** @test */
+    #[Test]
     public function has_permission_trata_string_numerica_como_nome_nao_como_id(): void
     {
         $userId = $this->user();

@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 use Gsebastiao\LaravelAuthz\Enums\PermissionFormat;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
@@ -43,7 +44,7 @@ class CacheableTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function com_cache_desligado_padrao_mudanca_direta_no_banco_aparece_na_hora(): void
     {
         $userId = $this->user();
@@ -56,7 +57,7 @@ class CacheableTest extends TestCase
         $this->assertTrue((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function com_cache_ligado_segunda_chamada_nao_reflete_mudanca_direta_no_banco(): void
     {
         config(['authz.cache.enabled' => true]);
@@ -73,7 +74,7 @@ class CacheableTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function cache_e_isolado_por_tenant_ativo(): void
     {
         config(['authz.cache.enabled' => true]);
@@ -105,7 +106,7 @@ class CacheableTest extends TestCase
         $this->assertTrue((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function grantPermissionToUser_invalida_o_cache_do_proprio_usuario(): void
     {
         config(['authz.cache.enabled' => true]);
@@ -123,7 +124,7 @@ class CacheableTest extends TestCase
         $this->assertTrue($auth->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function grantPermissionToGroup_invalida_o_cache_de_todo_membro_do_grupo(): void
     {
         config(['authz.cache.enabled' => true]);
@@ -150,7 +151,7 @@ class CacheableTest extends TestCase
         $this->assertTrue($auth->hasPermission('financeiro.aprovar', $user2));
     }
 
-    /** @test */
+    #[Test]
     public function invalidate_on_write_desligado_mantem_resposta_antiga_ate_forget_manual(): void
     {
         config([
@@ -177,7 +178,7 @@ class CacheableTest extends TestCase
         $this->assertTrue($auth->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function formatos_diferentes_compartilham_a_mesma_entrada_de_cache(): void
     {
         config(['authz.cache.enabled' => true]);
@@ -202,7 +203,7 @@ class CacheableTest extends TestCase
         $this->assertSame(['financeiro.aprovar'], $names);
     }
 
-    /** @test */
+    #[Test]
     public function getUserGroups_tambem_e_cacheado_independentemente(): void
     {
         config(['authz.cache.enabled' => true]);

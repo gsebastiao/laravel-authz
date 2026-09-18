@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\Auditable\Audit;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
@@ -28,7 +29,7 @@ class AuditableCrudTest extends TestCase
         Audit::reset();
     }
 
-    /** @test */
+    #[Test]
     public function create_group_insere_e_audita(): void
     {
         $id = (new Authorization())->createGroup('financeiro', 'grupo do financeiro');
@@ -42,7 +43,7 @@ class AuditableCrudTest extends TestCase
         $this->assertSame('auth_groups', $trail[0]['subjectType']);
     }
 
-    /** @test */
+    #[Test]
     public function update_group_audita_so_os_campos_que_mudaram(): void
     {
         $auth = new Authorization();
@@ -58,7 +59,7 @@ class AuditableCrudTest extends TestCase
         $this->assertArrayNotHasKey('name', $updateEntry['changes']); // não mudou, não deve aparecer
     }
 
-    /** @test */
+    #[Test]
     public function delete_group_soft_marca_deleted_at_e_audita(): void
     {
         $auth = new Authorization();
@@ -72,7 +73,7 @@ class AuditableCrudTest extends TestCase
         $this->assertTrue(collect($trail)->contains('event', 'deleted'));
     }
 
-    /** @test */
+    #[Test]
     public function delete_group_purge_remove_fisicamente_e_audita(): void
     {
         $auth = new Authorization();
@@ -86,7 +87,7 @@ class AuditableCrudTest extends TestCase
         $this->assertTrue(collect($trail)->contains('event', 'purged'));
     }
 
-    /** @test */
+    #[Test]
     public function update_em_id_inexistente_lanca_excecao_e_nao_chama_audit(): void
     {
         $auth = new Authorization();
@@ -104,7 +105,7 @@ class AuditableCrudTest extends TestCase
         $this->assertCount(0, Audit::$calls);
     }
 
-    /** @test */
+    #[Test]
     public function insert_com_violacao_de_unique_falha_e_audita_como_failed(): void
     {
         $auth = new Authorization();
@@ -127,7 +128,7 @@ class AuditableCrudTest extends TestCase
         $this->assertSame('created.failed', $failCall['event']);
     }
 
-    /** @test */
+    #[Test]
     public function auditoria_de_sucesso_acontece_dentro_da_mesma_transacao_da_escrita(): void
     {
         $auth = new Authorization();
@@ -151,7 +152,7 @@ class AuditableCrudTest extends TestCase
         $this->assertSame($countBefore, $countAfter);
     }
 
-    /** @test */
+    #[Test]
     public function desligar_auditoria_via_config_para_de_gravar_mas_crud_continua_funcionando(): void
     {
         config(['authz.audit.enabled' => false]);
@@ -162,7 +163,7 @@ class AuditableCrudTest extends TestCase
         $this->assertCount(0, Audit::$calls);
     }
 
-    /** @test */
+    #[Test]
     public function label_columns_do_config_redireciona_qual_coluna_vira_o_rotulo(): void
     {
         // 'description' já existe em auth_groups com valor diferente de

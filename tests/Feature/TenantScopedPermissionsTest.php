@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Contracts\TenantContext;
 use Gsebastiao\LaravelAuthz\Enums\PermissionFormat;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
@@ -77,7 +78,7 @@ class TenantScopedPermissionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[Test]
     public function sem_tenant_ativo_getAssignablePermissions_retorna_tudo(): void
     {
         $this->permission('global.padrao', tenantId: null);
@@ -88,7 +89,7 @@ class TenantScopedPermissionsTest extends TestCase
         $this->assertEqualsCanonicalizing(['global.padrao', 'exportar.massa'], $result);
     }
 
-    /** @test */
+    #[Test]
     public function com_tenant_ativo_getAssignablePermissions_esconde_exclusiva_de_outro_tenant(): void
     {
         $this->permission('global.padrao', tenantId: null);
@@ -101,7 +102,7 @@ class TenantScopedPermissionsTest extends TestCase
         $this->assertSame(['global.padrao'], $result);
     }
 
-    /** @test */
+    #[Test]
     public function tenant_dono_ve_sua_propria_permissao_exclusiva_no_seletor(): void
     {
         $this->permission('global.padrao', tenantId: null);
@@ -114,7 +115,7 @@ class TenantScopedPermissionsTest extends TestCase
         $this->assertContains($exportarMassaId, $result);
     }
 
-    /** @test */
+    #[Test]
     public function grant_indevido_a_permissao_de_outro_tenant_e_ignorado_na_checagem(): void
     {
         // Simula o que estamos protegendo: mesmo que um grant exista
@@ -135,7 +136,7 @@ class TenantScopedPermissionsTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('exportar.massa', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function grant_legitimo_de_permissao_exclusiva_do_proprio_tenant_funciona(): void
     {
         $exportarMassaId = $this->permission('exportar.massa', tenantId: 1);
@@ -150,7 +151,7 @@ class TenantScopedPermissionsTest extends TestCase
         $this->assertTrue((new Authorization())->hasPermission('exportar.massa', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function grantPermissionToGroup_rejeita_conceder_permissao_de_outro_tenant(): void
     {
         // Fecha o mesmo buraco que a checagem de leitura fecha, mas na
@@ -164,7 +165,7 @@ class TenantScopedPermissionsTest extends TestCase
         (new Authorization())->grantPermissionToGroup($grupoTenant2, $exportarMassaId);
     }
 
-    /** @test */
+    #[Test]
     public function grantPermissionToGroup_permite_conceder_permissao_global_a_qualquer_grupo(): void
     {
         $globalId = $this->permission('global.padrao', tenantId: null);

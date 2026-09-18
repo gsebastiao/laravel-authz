@@ -1,0 +1,66 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/*
+ * laravel-authz — migration 1 de 2: grupos e membros de grupo.
+ *
+ * Os nomes das tabelas vêm de config/authz.php (chave 'tables').
+ * Se precisar de outros nomes, edite o config ANTES de rodar o migrate.
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $users = config('authz.tables.users', 'users');
+        $groups = config('authz.tables.groups', 'auth_groups');
+        $groupsUsers = config('authz.tables.groups_users', 'auth_groups_users');
+
+        // Grupos (também chamados de "papéis" ou "roles").
+        Schema::create($groups, function (Blueprint $table) {
+            $table->id();
+            $table->string('name', 255);
+            $table->text('description')->nullable();
+            $table->unsignedTinyInteger('status')->default(1); // 1 = ativo, 0 = inativo
+            $table->unsignedBigInteger('tenant_id')->nullable()->index(); // null = sem tenant
+
+            // Coluna calculada pelo banco (nunca escreva nela). Serve só para a
+            // regra "nome de grupo único por tenant": NULL não é igual a NULL
+            // numa UNIQUE na maioria dos bancos, então usamos 0 no lugar de NULL.
+            $table->unsignedBigInteger('tenant_key')->storedAs('COALESCE(tenant_id, 0)');
+
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->unique(['tenant_key', 'name']);
+            $table->index('status');
+            $table->index(['status', 'created_at']);
+        });
+
+        // Quem está em qual grupo. Um usuário pode estar em vários grupos.
+        Schema::create($groupsUsers, function (Blueprint $table) use ($groups, $users) {
+            $table->id();
+            $table->foreignId('user_id')->constrained($users)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->foreignId('group_id')->constrained($groups)->cascadeOnUpdate()->cascadeOnDelete();
+            $table->unsignedTinyInteger('status')->default(1);   // 1 = ativo, 0 = suspenso
+            $table->date('start_date');                            // vale a partir de
+            $table->date('end_date')->nullable();                  // vale até (null = sem fim)
+            $table->unsignedTinyInteger('is_primary')->default(0); // grupo principal do usuário
+            $table->text('observacao')->nullable();
+
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->index(['user_id', 'group_id']);
+            $table->index('status');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists(config('authz.tables.groups_users', 'auth_groups_users'));
+        Schema::dropIfExists(config('authz.tables.groups', 'auth_groups'));
+    }
+};

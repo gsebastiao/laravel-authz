@@ -53,6 +53,10 @@ abstract class TestCase extends BaseTestCase
             $table->timestamps();
         });
 
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+        // As migrations do pacote são .php.stub (publicadas no projeto host
+        // com timestamp). Aqui rodamos os stubs diretamente, na ordem certa.
+        foreach (LaravelAuthzServiceProvider::MIGRATIONS as $name) {
+            (require __DIR__ . "/../database/migrations/{$name}.php.stub")->up();
+        }
     }
 }

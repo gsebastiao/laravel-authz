@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\Fixtures\TestUser;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
@@ -24,7 +25,7 @@ class AuditJoinsTest extends TestCase
         return $user;
     }
 
-    /** @test */
+    #[Test]
     public function colunas_padrao_mostram_criado_por_e_em_com_atualizado_nulo(): void
     {
         $this->actingUser('Ana');
@@ -43,7 +44,7 @@ class AuditJoinsTest extends TestCase
         $this->assertNull($row->audit_updated_by);
     }
 
-    /** @test */
+    #[Test]
     public function apos_update_colunas_de_updated_ficam_preenchidas(): void
     {
         $this->actingUser('Ana');
@@ -61,7 +62,7 @@ class AuditJoinsTest extends TestCase
         $this->assertSame('Bruno', $row->audit_updated_by);
     }
 
-    /** @test */
+    #[Test]
     public function pega_o_evento_mais_recente_quando_ha_mais_de_um_update(): void
     {
         $this->actingUser('Ana');
@@ -82,7 +83,7 @@ class AuditJoinsTest extends TestCase
         $this->assertSame('Carla', $row->audit_updated_by);
     }
 
-    /** @test */
+    #[Test]
     public function events_customizado_traz_so_as_colunas_pedidas(): void
     {
         $this->actingUser('Ana');
@@ -97,7 +98,7 @@ class AuditJoinsTest extends TestCase
         $this->assertArrayNotHasKey('audit_updated_at', $row);
     }
 
-    /** @test */
+    #[Test]
     public function prefixo_de_coluna_customizado_via_config(): void
     {
         config(['authz.audit.column_prefix' => 'log_']);
@@ -114,7 +115,7 @@ class AuditJoinsTest extends TestCase
         $this->assertArrayHasKey('log_created_by', $row);
     }
 
-    /** @test */
+    #[Test]
     public function chave_de_tabela_desconhecida_lanca_excecao_clara(): void
     {
         $this->expectException(\InvalidArgumentException::class);

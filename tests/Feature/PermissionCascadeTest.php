@@ -2,6 +2,7 @@
 
 namespace Gsebastiao\LaravelAuthz\Tests\Feature;
 
+use PHPUnit\Framework\Attributes\Test;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
 use Gsebastiao\LaravelAuthz\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
@@ -73,7 +74,7 @@ class PermissionCascadeTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[Test]
     public function passo_1_negacao_individual_vence_concessao_de_grupo(): void
     {
         $userId = $this->user();
@@ -87,7 +88,7 @@ class PermissionCascadeTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function passo_2_concessao_individual_vence_ausencia_de_grupo(): void
     {
         $userId = $this->user();
@@ -98,7 +99,7 @@ class PermissionCascadeTest extends TestCase
         $this->assertTrue((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function passo_3_deny_absoluto_de_grupo_vence_concessao_de_outro_grupo(): void
     {
         $userId = $this->user();
@@ -115,7 +116,7 @@ class PermissionCascadeTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function passo_4_concessao_de_grupo_vence_deny_fraco_de_outro_grupo(): void
     {
         $userId = $this->user();
@@ -132,7 +133,7 @@ class PermissionCascadeTest extends TestCase
         $this->assertTrue((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function passo_5_so_deny_fraco_resulta_em_negado(): void
     {
         $userId = $this->user();
@@ -145,7 +146,7 @@ class PermissionCascadeTest extends TestCase
         $this->assertFalse((new Authorization())->hasPermission('financeiro.aprovar', $userId));
     }
 
-    /** @test */
+    #[Test]
     public function passo_6_nenhum_registro_resulta_em_negado_por_padrao(): void
     {
         $userId = $this->user();

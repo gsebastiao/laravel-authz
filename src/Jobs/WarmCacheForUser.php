@@ -2,22 +2,27 @@
 
 namespace Gsebastiao\LaravelAuthz\Jobs;
 
-use Illuminate\Bus\Queueable;
-use Illuminate\Queue\SerializesModels;
-use Illuminate\Queue\InteractsWithQueue;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Gsebastiao\LaravelAuthz\Models\Authorization;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
 
+/**
+ * Pré-carrega o cache de um usuário em segundo plano (só faz sentido com
+ * AUTHZ_CACHE_ENABLED=true). Ex: WarmCacheForUser::dispatch($user->id);
+ */
 class WarmCacheForUser implements ShouldQueue
 {
-    use InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable, InteractsWithQueue, Queueable;
 
-    public function __construct(protected int $userId) {}
-
-    public function handle()
+    public function __construct(public int $userId)
     {
-        $auth = new Authorization();
-        $auth->getEffectivePermissions($this->userId);
-        $auth->getUserGroups($this->userId);
+    }
+
+    public function handle(Authorization $authz): void
+    {
+        $authz->getUserGroups($this->userId);
+        $authz->getEffectivePermissions($this->userId);
     }
 }

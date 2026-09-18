@@ -1,6 +1,10 @@
+*.log
+.idea/
+.vscode/
 /vendor/
 tag-msg.txt
 composer.lock
 commit-msg.txt
+commit-code.txt
 .phpunit.cache/
 .phpunit.result.cache
