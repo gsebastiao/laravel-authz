@@ -1,4 +1,4 @@
-# gsebastiao/laravel-authz
+# Laravel Authorization
 
 [![Latest Version](https://img.shields.io/packagist/v/gsebastiao/laravel-authz.svg)](https://packagist.org/packages/gsebastiao/laravel-authz)
 [![License](https://img.shields.io/packagist/l/gsebastiao/laravel-authz.svg)](LICENSE.md)
@@ -39,7 +39,13 @@ cache só quando (e se) o projeto realmente precisar.
 
 ```bash
 composer require gsebastiao/laravel-authz
+```
+
+```bash
 php artisan vendor:publish --tag=authz-config
+```
+
+```bash
 php artisan migrate
 ```
 
@@ -82,7 +88,7 @@ individualmente, e o que os grupos dele concedem/negam — e a ordem de
 prioridade é fixa:
 
 | # | Fonte | Resultado |
-|---|---|---|
+| --- | --- | --- |
 | 1 | Negação individual no usuário | **Negado**, sempre — nenhum grupo reverte isso |
 | 2 | Concessão individual no usuário | **Concedido**, sempre |
 | 3 | Negação *absoluta* de algum grupo do usuário | **Negado** — vence concessão de outro grupo |
@@ -111,6 +117,9 @@ outra coisa, publique e edite o config antes de rodar a migration:
 
 ```bash
 php artisan vendor:publish --tag=authz-config
+```
+
+```bash
 php artisan vendor:publish --tag=authz-migrations
 ```
 
@@ -397,7 +406,7 @@ As funções de CRUD invalidam o cache certo sozinhas — não precisa chamar
 nada manualmente no caminho comum:
 
 | Ação | Invalida |
-|---|---|
+| --- | --- |
 | `addUserToGroup`, `removeUserFromGroup`, `updateGroupMembership` | o usuário específico |
 | `grantPermissionToUser`, `updateUserPermission`, `revokeUserPermission` | o usuário específico |
 | `grantPermissionToGroup`, `updateGroupPermission`, `revokeGroupPermission` | todo membro atual do grupo |

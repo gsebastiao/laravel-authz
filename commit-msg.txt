@@ -1,14 +1,12 @@
-v2.0.0: revisão completa do pacote antes da publicação
+v2.0.1: corrige publicação de migrations via vendor:publish
 
-- Corrige erro fatal de sintaxe nos 5 models mutáveis
-- Move os 15 métodos de CRUD para Authorization.php
-- Adiciona as 16 classes de evento em falta
-- Implementa auditoria condicional via laravel-auditable (class_alias)
-- Adiciona Gates auto-registrados, Middleware (movido para o path PSR-4 correto), macro whereHasPermission, Blade directives
-- Reescreve SyncPermissionsCommand com lógica real
-- Remove HierarchicalTenantContext.php e can()/cannot() de helpers.php
-- BREAKING: nova coluna gerada tenant_key em auth_groups (corrige bug de unicidade de nome de grupo por tenant)
-- BREAKING: Middleware movido de Http/Middleware.php para Http/Middleware/PermissionMiddleware.php
-- Corrige bug crítico: defesa de tenant desligada quando não há tenant ativo (when() com condição sempre falsy)
-- Corrige coluna ambígua em applyWhereHasPermission()
-- README e CHANGELOG atualizados
+- Corrige php artisan vendor:publish --tag=authz-migrations, que copiava
+  os arquivos .stub literalmente em vez de gerar migrations .php com
+  timestamp (o comportamento padrão esperado pelo comando)
+- Troca $this->publishes() genérico por $this->publishesMigrations()
+  no boot() do ServiceProvider — helper correto do Laravel (desde a
+  versão 11) para publicar migrations de pacote: renomeia o arquivo com
+  o timestamp atual e troca a extensão .stub por .php no momento da
+  publicação
+- Bug encontrado rodando o comando de verdade contra um projeto host,
+  não por leitura de código

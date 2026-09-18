@@ -1,4 +1,6 @@
 /vendor/
+tag-msg.txt
 composer.lock
+commit-msg.txt
 .phpunit.cache/
 .phpunit.result.cache

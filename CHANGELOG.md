@@ -188,12 +188,20 @@ estática e `php -l` não os teriam detectado:
   direto, ignorando `config('authz.user_model')` (que não existia ainda
   no config nesta altura da investigação). Corrigido para tentar
   `authz.user_model` primeiro.
-- O teste `ConfigurableUserTableTest` usava a chave de config
+- **`ConfigurableUserTableTest`** usava a chave de config
   `authz.tables.user` (singular) para simular uma tabela de usuários
   renomeada, mas a chave real do pacote é `authz.tables.users` (plural)
   — o teste testava, sem perceber, sempre o valor padrão. Corrigido
   para a chave certa; validado por execução real que a foreign key de
   `auth_groups_users.user_id` de fato aponta para o nome configurado.
+- **`php artisan vendor:publish --tag=authz-migrations` copiava os
+  `.stub` literalmente**, em vez de gerar migrations `.php` com
+  timestamp (o padrão esperado pelo comando). O ServiceProvider usava
+  `$this->publishes()` genérico para as migrations; o helper correto
+  para este caso é `$this->publishesMigrations()` (disponível desde
+  Laravel 11), que instrui o `vendor:publish` a renomear o arquivo com
+  o timestamp atual e trocar a extensão `.stub` por `.php` — descoberto
+  rodando o comando de verdade contra um projeto host, não por leitura.
 
 ### Pendências conhecidas
 - Decisão de negócio em aberto: negação individual (`auth_permissions_users`)
